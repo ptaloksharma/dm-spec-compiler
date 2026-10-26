@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html><head><title>Logistics Mesh Spec</title>
+<style>body{color:red}</style><script>track()</script></head>
+<body>
+<nav>ignore me</nav>
+<h1>Fleet Logistics Mesh — Functional Spec</h1>
+<p>Three-tier mesh: a UI coordinator, a department orchestrator, and a domain agent.</p>
+
+<h2>Agent: logistics-coordinator</h2>
+<p>role: ui-coordinator</p>
+<p>tier: fast-path</p>
+<p>objective: Route inbound transport requests to the right department orchestrator.</p>
+<p>delegates_to: fleet-orchestrator</p>
+<p>egress: api.carrier-eu.example, tracking.carrier-eu.example</p>
+
+<h3>States</h3>
+<ul>
+<li>T01 intake — request received</li>
+<li>T02 classify — determine department</li>
+</ul>
+
+<h3>Entry Points</h3>
+<ul>
+<li>EP-INT ingress — transport request arrives → T01</li>
+</ul>
+
+<h3>Tools</h3>
+<ul>
+<li>classify_request — pick the target department</li>
+<li>delegate_to_orchestrator — hand off downstream (mutating)</li>
+</ul>
+
+<h2>Agent: fleet-orchestrator</h2>
+<p>role: domain-agent</p>
+<p>tier: standard</p>
+<p>objective: Orchestrate fleet assignment within the logistics department.</p>
+<p>delegates_to: customs-agent</p>
+<p>hitl_threshold_eur: 25000</p>
+
+<h3>States</h3>
+<ul>
+<li>T01 receive — handoff payload received</li>
+<li>T05 assign — vehicle assigned (invariant: driver hours within legal limit)</li>
+<li>T07 confirm [HOLD] — awaiting ops confirmation</li>
+</ul>
+
+<h3>Entry Points</h3>
+<ul>
+<li>EP-CAP capture — orchestrator receives handoff → T01</li>
+</ul>
+
+<h3>Tools</h3>
+<ul>
+<li>assign_vehicle — choose a compliant vehicle (mutating)</li>
+<li>check_driver_hours — verify legal driving hours</li>
+</ul>
+
+<h3>Entities</h3>
+<ul>
+<li>vehicle(id, plate, capacity_kg, status)</li>
+<li>driver(id, name, hours_this_week)</li>
+</ul>
+
+<h3>Invariants</h3>
+<ul>
+<li>Driver weekly hours must not exceed the legal maximum.</li>
+<li>Assignments over €25,000 require human approval.</li>
+</ul>
+
+<h2>Agent: customs-agent</h2>
+<p>role: sub-agent</p>
+<p>tier: deep</p>
+<p>objective: Validate cross-border customs documentation for assigned loads.</p>
+
+<h3>States</h3>
+<ul>
+<li>T01 validate — documents received</li>
+<li>T04 clear — customs cleared</li>
+</ul>
+
+<h3>Entry Points</h3>
+<ul>
+<li>EP-HS handoff — receive from orchestrator → T01</li>
+</ul>
+
+<h3>Tools</h3>
+<ul>
+<li>validate_documents — check HS codes and manifests</li>
+</ul>
+
+<footer>copyright ignore</footer>
+</body></html>

@@ -1,0 +1,141 @@
+# dm-spec-compiler
+
+**Standalone, universal spec-to-code & architecture compiler for the `dm-agent-kit` ecosystem.**
+
+Ingests raw requirement/spec packs (HTML / Markdown / PDF) from a local incoming
+folder, parses them **deterministically** (BeautifulSoup / PyMuPDF / heading grammars
+— **no raw LLM code generation**), compiles a validated `TECH_DESIGN.yaml`, runs an
+**Architect-in-the-Loop** review gate, then emits the `dm-agent-kit` **editable zone**
+into target agent workspaces. It never touches the core kit repo.
+
+Domain-agnostic by construction: nothing in the pipeline assumes AP, ERP, or any
+vertical. A 3-tier logistics mesh, a finance mesh, or a warehouse-robotics fleet are
+all just `# Agent:` blocks in a spec.
+
+## Architecture
+
+```
+blueprints/incoming-specs/   raw spec packs (.html .md .pdf)
+        │  Module 1 · ingest.py        deterministic → clean markdown + provenance
+        ▼
+blueprints/spec-pack/*.md
+        │  Module 2 · design.py        heading/regex grammar → validated model.py (pydantic)
+        ▼
+blueprints/TECH_DESIGN.yaml
+        │  Module 3 · review.py        Architect-in-the-Loop (sha-bound approval stamp)
+        ▼
+TECH_DESIGN.yaml.approved
+        │  Module 4 · emit.py          deterministic renderers → editable zone ONLY
+        ▼
+agents/<name>/GOAL.yaml  +  agents/<name>/src/logic/{state,tools,prompts,workflow}.py
+        │  Module 5 · verify.py        kit hooks via ONE seam (never vendored)
+        ▼
+dm-agent mesh verify · agent.py --self-test/--mesh-test · archify dashboard
+```
+
+### Hard boundaries (fail-closed)
+
+* **Editable zone only** — the emitter writes exactly 6 paths per agent
+  (`GOAL.yaml`, `src/logic/__init__.py`, `state.py`, `tools.py`, `prompts.py`,
+  `workflow.py`). Nothing else. Proven by test: workspace root contains only
+  `{GOAL.yaml, src}`.
+* **Kit is external** — all kit interaction goes through `verify.py` /
+  `_kitpath.py`. The kit is resolved via `$DM_AGENT_KIT_ROOT` (default
+  `~/dm-agent-kit`) and invoked as a library/binary. Emission into the kit tree
+  itself raises `PermissionError`.
+* **Approval gate** — `emit` refuses unless `TECH_DESIGN.yaml` is approved.
+  The approval stamp (`TECH_DESIGN.yaml.approved`) binds the sha256 of the
+  design bytes; editing the YAML after approval invalidates it.
+* **Deterministic extraction** — states (`T01..`), entry points (`EP-XXX`),
+  tools, entities, invariants and cross-agent edges all come from a documented
+  markdown grammar. No LLM guessing. (An optional LLM pass may later draft
+  *summary text*, but its output must validate through the same pydantic
+  `TechDesign` schema — zero structural drift.)
+
+## Spec grammar
+
+Everything is optional; missing sections yield empty lists.
+
+```markdown
+## Agent: fleet-orchestrator
+role: domain-agent            # ui-coordinator | domain-agent | sub-agent
+tier: standard                # fast-path | standard | deep
+objective: Orchestrate fleet assignment.
+delegates_to: customs-agent   # → cross-agent edges
+hitl_threshold_eur: 25000
+egress: api.carrier-eu.example
+
+### States
+- T01 receive — handoff payload received
+- T05 assign — vehicle assigned (invariant: driver hours within legal limit)
+- T07 confirm [HOLD] — awaiting ops confirmation
+
+### Entry Points
+- EP-CAP capture — orchestrator receives handoff → T01
+
+### Tools
+- assign_vehicle — choose a compliant vehicle (mutating)
+- check_driver_hours — verify legal driving hours
+
+### Entities
+- vehicle(id, plate, capacity_kg, status)
+
+### Invariants
+- Driver weekly hours must not exceed the legal maximum.
+```
+
+## Usage
+
+```bash
+# one-shot end-to-end
+dm-spec-compiler run \
+  --incoming ./blueprints/incoming-specs \
+  --spec-pack ./blueprints/spec-pack \
+  --design ./blueprints/TECH_DESIGN.yaml \
+  --target ./agents \
+  --yes                       # non-interactive auto-approve (drop for TTY review)
+
+# or stage-by-stage
+dm-spec-compiler ingest  --incoming ... --spec-pack ...
+dm-spec-compiler compile --spec-pack ... --design ...
+dm-spec-compiler review  --design ...            # interactive [a]pprove/[e]dit/[q]uit
+dm-spec-compiler emit    --design ... --target ./agents [--agent NAME] [--force]
+dm-spec-compiler verify  --target ./agents
+```
+
+`review` on a TTY prints a per-agent summary and prompts. `[e]dit` opens the
+YAML in `$EDITOR` and re-validates on save. Non-interactive runs require the
+pre-existing sha-bound stamp (`--yes` writes it).
+
+## Verification hooks (Module 5)
+
+* `mesh verify` — locates the kit CLI (`dist/cli/index.js` → `npx dm-kit`),
+  runs `dm-agent mesh verify` in the workspace.
+* `agent.py --self-test` / `--mesh-test` — per workspace; **SKIP** (not crash)
+  when no `agent.py` exists — correct, since the emitter only writes the
+  editable zone (the kit scaffolds the runtime separately).
+* `archify.generate()` — regenerates `architecture-dashboard.html` (4-view
+  Mermaid: mesh topology / workflow / data-flow / cloud) and stamps the
+  Zero-Drift seal into `.dm-lock.json`.
+
+## Development
+
+```bash
+uv venv .venv --python 3.11
+uv pip install --python .venv/bin/python -e '.[dev]'
+.venv/bin/python -m pytest tests -q     # 13 tests, deterministic, no live kit
+```
+
+The test suite uses a 3-tier **logistics** fixture (deliberately not ERP) plus a
+synthetic PDF, and proves: HTML→markdown stripping, 3-tier role extraction,
+state/HOLD/invariant parsing, cross-agent edges, schema rejection of bad ids,
+the approval gate (incl. tamper invalidation), editable-zone-only emission,
+`ast.parse` of every emitted file, GOAL contract fields, refusal without
+approval, refusal to write into the kit tree, and the full CLI run.
+
+## Buddy UI (future)
+
+Modules are UI-ready: `ingest_dir`, `compile_design`, `review_gate`,
+`emit_design`, `run_all` are pure functions with file-path in/out — no globals,
+no CLI coupling. A Buddy UI (`:7700`) tab can call them directly and render
+`render_summary(design)` for the review step.
