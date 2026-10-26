@@ -27,6 +27,7 @@ class IngestedDoc:
     markdown: str
     sha256: str
     warnings: list[str] = field(default_factory=list)
+    raw_html: str = ""  # populated for kind=="html" (rich DOM extraction)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,8 +168,10 @@ def pdf_to_markdown(path: str) -> tuple[str, str, list[str]]:
 def ingest_file(path: str) -> IngestedDoc:
     ext = os.path.splitext(path)[1].lower()
     raw_sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    raw_html = ""
     if ext in (".html", ".htm"):
-        title, md, w = html_to_markdown(open(path, encoding="utf-8", errors="replace").read())
+        raw_html = open(path, encoding="utf-8", errors="replace").read()
+        title, md, w = html_to_markdown(raw_html)
         kind = "html"
     elif ext in (".md", ".markdown"):
         title, md, w = markdown_to_markdown(open(path, encoding="utf-8", errors="replace").read())
@@ -179,7 +182,8 @@ def ingest_file(path: str) -> IngestedDoc:
     else:
         raise ValueError(f"unsupported spec type: {ext}")
     return IngestedDoc(source_path=path, kind=kind, title=title,
-                       markdown=md, sha256=raw_sha, warnings=w)
+                       markdown=md, sha256=raw_sha, warnings=w,
+                       raw_html=raw_html)
 
 
 def ingest_dir(incoming: str, out_dir: str) -> list[IngestedDoc]:

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html><head><title>Inventory Entry Point Catalogue</title></head><body>
+<h1>Inventory Entry Point Catalogue</h1>
+
+<details class="ep" id="EP-RCV-01" data-st="received" data-k="k-cmd">
+<summary><span class="id">EP-RCV-01</span> <span class="nm">ReceiveGoods</span>
+<span class="s-prop">proposed</span> <span class="tr">Received</span> command</summary>
+<div class="eb">
+<p><span class="k">route</span>: POST /api/inventory/receive</p>
+<p><span class="k">input</span>: sku, qty, warehouse_id; schema ReceiveGoods.json</p>
+<p><span class="k">guards</span>: warehouse exists</p>
+<ol>
+<li><span class="lv-det">Code</span> validate payload schema</li>
+<li><span class="lv-det">Code</span> persist receipt</li>
+</ol>
+<p><span class="k">outputs</span>: <span class="mono">GoodsReceived</span></p>
+<p><span class="k">errors</span>: UnknownWarehouse</p>
+<p><span class="k">idempotency</span>: key on sku + receipt_id</p>
+<p>Given a warehouse When goods received Then on_hand increases</p>
+</div>
+</details>
+
+<details class="ep" id="EP-RSV-01" data-st="reserved" data-k="k-cmd">
+<summary><span class="id">EP-RSV-01</span> <span class="nm">ReserveStock</span>
+<span class="tr">Available -> Reserved</span> command</summary>
+<div class="eb">
+<p><span class="k">route</span>: POST /api/inventory/{sku}/reserve</p>
+<p><span class="k">input</span>: sku, qty, order_id</p>
+<p><span class="k">guards</span>: on_hand &gt;= qty</p>
+<ol>
+<li><span class="lv-det">Code</span> check availability</li>
+<li><span class="lv-aid">AI decides</span> allocate across warehouses</li>
+<li><span class="lv-ais">AI suggests</span> substitute SKUs</li>
+<li><span class="lv-det">Code</span> decrement available</li>
+</ol>
+<p><span class="k">outputs</span>: <span class="mono">StockReserved</span></p>
+<p><span class="k">errors</span>: InsufficientStock</p>
+<p><span class="k">idempotency</span>: key on order_id</p>
+<p>Given available stock When reserved Then reserved increases</p>
+</div>
+</details>
+
+<details class="ep" id="EP-QRY-01" data-st="available" data-k="k-qry">
+<summary><span class="id">EP-QRY-01</span> <span class="nm">GetAvailability</span> query</summary>
+<div class="eb">
+<p><span class="k">route</span>: GET /api/inventory/{sku}/availability</p>
+<p><span class="k">outputs</span>: <span class="mono">AvailabilityReport</span></p>
+<ol>
+<li><span class="lv-det">Code</span> read projection</li>
+</ol>
+</div>
+</details>
+</body></html>

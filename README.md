@@ -54,6 +54,30 @@ dm-agent mesh verify · agent.py --self-test/--mesh-test · archify as-built das
   that branches to `hitl` on HOLD states and `end` at the terminal. It
   compiles and executes against a live `langgraph` install, and degrades to a
   deterministic walk when langgraph is absent (scaffold-time safe).
+
+### v0.3.0 — rich πd Genius HTML + production emission + live runtime
+
+* **Rich DOM extraction** (`htmlspec.py`): three HTML spec shapes parsed
+  deterministically from the DOM — `*Entity_and_State_Model*` (catalogue
+  `.pill` scope, `table.t.attrs` typed fields, `.st`/`.st.term` states,
+  `T01..T10b` transitions incl. backward + `Any`-wildcard rows, `#holds`,
+  `#invariants`), `*Entry_Point_Catalogue*` (`<details class="ep">` with
+  autonomy badges `.lv-det/.lv-ais/.lv-aid/.lv-hum`, guards, outbox outputs,
+  idempotency, Given/When/Then tests), and `*-REQ*` (`#nfr` table + `.req-card`
+  EARS clauses with posture).
+* **Production emission** (`emit_rich.py`): `state.py` emits a `TypedDict` per
+  entity + `active_holds`/`exceptions`/`version`/`correlation_id`/
+  `legal_entity_id` + `check_i_NN` invariant helpers; `tools.py` emits one
+  Level-4 function per Entry Point pre-wired with idempotency dedup,
+  `expected_version` optimistic concurrency, StateHistory + OutboxEvent;
+  `prompts.py` emits a named+versioned prompt constant per `AI decides`/
+  `AI suggests` step enforcing the **Untrusted Text Rule**; `workflow.py`
+  emits the I-03 hold-freeze guard, I-04 hold-placed withdrawal, and a
+  `NEEDS_DATA` cross-agent branch.
+* **Live runtime** (`render_runtime`): every emitted agent gets `agent.py`
+  exposing `--self-test` and `--mesh-test`, so Module 5 runs **LIVE (PASS)**
+  instead of SKIP. Legacy (sparse-markdown) models still use the v0.2
+  templates; rich models are detected and upgraded automatically.
 * **Deterministic extraction** — states (`T01..`), entry points (`EP-XXX`),
   tools, entities, invariants and cross-agent edges all come from a documented
   markdown grammar. No LLM guessing. (An optional LLM pass may later draft

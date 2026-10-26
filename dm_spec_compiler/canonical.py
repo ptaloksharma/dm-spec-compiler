@@ -54,6 +54,27 @@ def render_requirements(design: TechDesign) -> str:
             out.append("### Invariants")
             for inv in a.invariants:
                 out.append(f"- {inv}")
+        if a.transitions:
+            out.append("")
+            out.append("### Transitions")
+            for t in a.transitions:
+                out.append(f"- {t.id} {t.from_state} → {t.to_state}"
+                           + (f" (trigger: {t.trigger})" if t.trigger else ""))
+        if a.holds:
+            out.append("")
+            out.append("### Holds")
+            for h in a.holds:
+                out.append(f"- {h.hold_type} (placed by {h.placed_by or 'n/a'})")
+        if a.ears_requirements:
+            out.append("")
+            out.append("### EARS Requirements")
+            for r in a.ears_requirements:
+                out.append(f"- {r.id} {r.title} [{r.posture}]")
+        if a.nfr_requirements:
+            out.append("")
+            out.append("### Non-Functional Requirements")
+            for n in a.nfr_requirements:
+                out.append(f"- [{n.category}] {n.requirement} → {n.target}")
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 
@@ -67,9 +88,15 @@ def render_entities(design: TechDesign) -> str:
         any_ent = True
         out.append(f"## {a.name}")
         for e in a.entities:
-            fields = ", ".join(e.fields) if e.fields else "(no fields declared)"
-            out.append(f"- {e.name}  →  table `{e.table}`")
-            out.append(f"    - fields: {fields}")
+            out.append(f"- {e.name}  →  table `{e.table}`"
+                       + (f"  [{e.scope}]" if e.scope else "")
+                       + (f"  (owner: {e.owner})" if e.owner else ""))
+            if e.typed_fields:
+                for tf in e.typed_fields:
+                    out.append(f"    - {tf.name}: {tf.type}"
+                               + (f"  # {tf.note}" if tf.note else ""))
+            elif e.fields:
+                out.append(f"    - fields: {', '.join(e.fields)}")
         out.append("")
     if not any_ent:
         out.append("_(no entities declared in any agent spec)_")
@@ -86,11 +113,20 @@ def render_entry_points(design: TechDesign) -> str:
         out.append(f"## {a.name}")
         for ep in a.entry_points:
             line = f"- {ep.id} [{ep.kind}]"
-            if ep.description:
+            if ep.name:
+                line += f" {ep.name}"
+            if ep.description and ep.description != ep.name:
                 line += f" — {ep.description}"
             if ep.target_state:
                 line += f" → {ep.target_state}"
+            if ep.proposed:
+                line += " (proposed)"
             out.append(line)
+            auto = sorted(ep.autonomy_flags() - {"code"})
+            if auto:
+                out.append(f"    - autonomy: {', '.join(auto)}")
+            if ep.route:
+                out.append(f"    - route: {ep.route}")
         out.append("")
     if not any_ep:
         out.append("_(no entry points declared in any agent spec)_")

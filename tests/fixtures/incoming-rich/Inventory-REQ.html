@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html><head><title>Inventory Requirements</title></head><body>
+<h1>Inventory Requirements (EARS)</h1>
+
+<section id="nfr">
+<table class="nfr-table">
+<tr><th>Category</th><th>Requirement</th><th>Target</th></tr>
+<tr><td>Performance</td><td>Reservation latency</td><td>&lt; 300ms</td></tr>
+<tr><td>Availability</td><td>Read projection uptime</td><td>99.9%</td></tr>
+</table>
+</section>
+
+<div class="req-card" id="REQ-01">
+<span class="req-id">REQ-01</span> <span class="req-title">Auto-allocate stock</span>
+<span class="posture">Automate</span>
+<div class="ears-item"><span class="ears-tag">Event</span> <span class="ears-text">When an order is placed</span></div>
+<div class="ears-item"><span class="ears-tag">Ubiquitous</span> <span class="ears-text">The system shall reserve stock across warehouses</span></div>
+</div>
+
+<div class="req-card" id="REQ-02">
+<span class="req-id">REQ-02</span> <span class="req-title">Negative stock guard</span>
+<span class="posture">Detect + escalate</span>
+<div class="ears-item"><span class="ears-tag">Unwanted</span> <span class="ears-text">If on_hand would go negative</span></div>
+<div class="ears-item"><span class="ears-tag">State</span> <span class="ears-text">While a hold is active</span></div>
+</div>
+</body></html>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html><head><title>Inventory Entity & State Model</title></head><body>
+<h1>Inventory Ledger — Entity & State Model</h1>
+
+<section id="catalogue">
+<table class="t">
+<tr><th>Entity</th><th>Owner</th><th>Acts</th></tr>
+<tr><td><span class="mono">inventory_item</span> <span class="pill">v1</span></td><td>Inventory Agent</td><td>create, adjust, reserve, release</td></tr>
+<tr><td><span class="mono">warehouse</span> <span class="pill">Reference</span></td><td>Location Service</td><td>read</td></tr>
+<tr><td><span class="mono">reservation</span> <span class="pill">Later</span></td><td>Inventory Agent</td><td>create, cancel</td></tr>
+</table>
+</section>
+
+<h3>inventory_item attributes</h3>
+<table class="t attrs">
+<tr><th>attr</th><th>type</th><th>note</th></tr>
+<tr><td><span class="mono">sku</span></td><td><span class="ty">string</span></td><td>primary key</td></tr>
+<tr><td><span class="mono">on_hand</span></td><td><span class="ty">integer</span></td><td>physical count</td></tr>
+<tr><td><span class="mono">reserved</span></td><td><span class="ty">integer</span></td><td>allocated count</td></tr>
+<tr><td><span class="mono">version</span></td><td><span class="ty">integer</span></td><td>optimistic lock</td></tr>
+</table>
+
+<section id="inv-states">
+<table class="t">
+<tr><th>State</th></tr>
+<tr><td class="st"><span class="mono">T01</span> <span class="nm">Received</span> <span class="meaning">goods received at dock</span></td></tr>
+<tr><td class="st"><span class="mono">T02</span> <span class="nm">Counted</span> <span class="meaning">cycle count complete</span></td></tr>
+<tr><td class="st"><span class="mono">T03</span> <span class="nm">Available</span> <span class="meaning">available to promise</span></td></tr>
+<tr><td class="st"><span class="mono">T04</span> <span class="nm">Reserved</span> <span class="meaning">allocated to order</span></td></tr>
+<tr><td class="st term"><span class="mono">T05</span> <span class="nm">Shipped</span> <span class="meaning">left the warehouse</span></td></tr>
+<tr><td class="st term"><span class="mono">T06</span> <span class="nm">WrittenOff</span> <span class="meaning">scrapped</span></td></tr>
+</table>
+</section>
+
+<section id="inv-trans">
+<table class="t">
+<tr><th>ID</th><th>Transition</th><th>Trigger</th><th>Guard</th><th>Effect</th></tr>
+<tr><td>T01</td><td>Received -&gt; Counted</td><td>cycle_count</td><td>count recorded</td><td>update on_hand</td></tr>
+<tr><td>T02</td><td>Counted -&gt; Available</td><td>release_to_atp</td><td>variance &lt; threshold</td><td>publish ATP</td></tr>
+<tr><td>T03</td><td>Available -&gt; Reserved</td><td>reserve</td><td>on_hand &gt;= qty</td><td>decrement available</td></tr>
+<tr><td>T04</td><td>Reserved -&gt; Shipped</td><td>ship</td><td>carrier assigned</td><td>emit Shipped event</td></tr>
+<tr><td>T10b</td><td>Available -&gt; Counted</td><td>recount requested</td><td>I-02</td><td>withdraw from ATP</td></tr>
+<tr><td>T12</td><td>Any -&gt; WrittenOff</td><td>write_off</td><td>manager approval</td><td>ledger adjustment</td></tr>
+</table>
+</section>
+
+<section id="holds">
+<table class="t">
+<tr><th>type</th><th>placed by</th><th>scope</th><th>auto-release</th><th>on release</th></tr>
+<tr><td><span class="mono">quality_hold</span></td><td>QA System</td><td>Item</td><td>qa_passed</td><td>resume to Available</td></tr>
+<tr><td><span class="mono">cycle_count_hold</span></td><td>Scheduler</td><td>Warehouse</td><td>count_complete</td><td>recount</td></tr>
+</table>
+</section>
+
+<section id="invariants">
+<table class="t">
+<tr><th>id</th><th>rule</th></tr>
+<tr><td><span class="mono">I-01</span></td><td>on_hand must never be negative</td></tr>
+<tr><td><span class="mono">I-02</span></td><td>reserved + available must equal on_hand</td></tr>
+<tr><td><span class="mono">I-03</span></td><td>Freeze all transitions while a hold is active</td></tr>
+<tr><td><span class="mono">I-04</span></td><td>Withdraw from Available to Counted when a recount hold is placed</td></tr>
+</table>
+</section>
+</body></html>

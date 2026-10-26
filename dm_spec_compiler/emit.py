@@ -24,6 +24,7 @@ import os
 import yaml
 
 from .model import AgentDef, TechDesign
+from . import emit_rich
 
 _SENTINEL = "# DM-SPEC-COMPILER GENERATED BLOCK (regenerated from TECH_DESIGN.yaml)"
 
@@ -55,18 +56,19 @@ def render_goal(agent: AgentDef, design: TechDesign) -> str:
 # src/logic/state.py                                                            #
 # --------------------------------------------------------------------------- #
 def render_state(agent: AgentDef) -> str:
-    state_fields = []
-    for s in agent.states:
-        state_fields.append(f"    # {s.id} {s.name}: {s.description}")
-    state_comment = "\n".join(state_fields) or "    # (no states declared in spec)"
+    if emit_rich._is_rich(agent):
+        return emit_rich.render_state(agent)
+    return _render_state_legacy(agent)
 
-    invariant_consts = []
-    for i, inv in enumerate(agent.invariants, 1):
-        invariant_consts.append(f'    "INV{i:02d}": {inv!r},')
-    inv_block = "\n".join(invariant_consts) or '    # (no invariants declared)'
 
+def _render_state_legacy(agent: AgentDef) -> str:
+    state_comment = "\n".join(
+        f"    # {s.id} {s.name}: {s.description}" for s in agent.states) or \
+        "    # (no states declared in spec)"
+    inv_block = "\n".join(
+        f'    "INV{i:02d}": {inv!r},' for i, inv in enumerate(agent.invariants, 1)) \
+        or '    # (no invariants declared)'
     holds = [s.id for s in agent.states if s.hold]
-
     return f'''"""
 {agent.name} — graph state + nodes (EDITABLE logic file 4 of 4).
 
@@ -78,19 +80,14 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-# Invariants extracted from the spec pack (enforce in tools.py policy module).
 INVARIANTS: dict[str, str] = {{
 {inv_block}
 }}
-
-# States that require a human hold before progression.
 HOLD_STATES: list[str] = {holds!r}
-
 STATE_IDS: list[str] = {[s.id for s in agent.states]!r}
 
 
 class AgentState(TypedDict, total=False):
-    """State threaded through every node of the graph."""
     input: dict[str, Any]
     messages: list[dict[str, str]]
     current_state: str
@@ -104,6 +101,12 @@ class AgentState(TypedDict, total=False):
 # src/logic/tools.py                                                            #
 # --------------------------------------------------------------------------- #
 def render_tools(agent: AgentDef) -> str:
+    if emit_rich._is_rich(agent):
+        return emit_rich.render_tools(agent)
+    return _render_tools_legacy(agent)
+
+
+def _render_tools_legacy(agent: AgentDef) -> str:
     fns: list[str] = []
     names: list[str] = []
     for t in agent.tools:
@@ -154,6 +157,12 @@ TOOLS: dict[str, Any] = {{
 # src/logic/prompts.py                                                          #
 # --------------------------------------------------------------------------- #
 def render_prompts(agent: AgentDef) -> str:
+    if emit_rich._is_rich(agent):
+        return emit_rich.render_prompts(agent)
+    return _render_prompts_legacy(agent)
+
+
+def _render_prompts_legacy(agent: AgentDef) -> str:
     mission = (agent.objective or agent.use_case or f"serve as {agent.name}").strip()
     tools_list = ", ".join(t.name for t in agent.tools) or "echo"
     inv_lines = " ".join(f"- {i}" for i in agent.invariants)
@@ -185,6 +194,12 @@ DEVELOPER_PROMPT = {developer!r}
 # src/logic/workflow.py                                                         #
 # --------------------------------------------------------------------------- #
 def render_workflow(agent: AgentDef, design: TechDesign) -> str:
+    if emit_rich._is_rich(agent):
+        return emit_rich.render_workflow(agent, design)
+    return _render_workflow_legacy(agent, design)
+
+
+def _render_workflow_legacy(agent: AgentDef, design: TechDesign) -> str:
     ep = agent.entry_points[0].id if agent.entry_points else "EP-INGRESS"
     first = agent.states[0].id if agent.states else "T01"
     ordered = [s.id for s in agent.states] or ["T01"]
@@ -319,6 +334,85 @@ def render_logic_init(agent: AgentDef) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# agent.py — locked runtime harness (self-test / mesh-test)                    #
+# --------------------------------------------------------------------------- #
+def render_runtime(agent: AgentDef) -> str:
+    """A minimal governed runtime exposing --self-test and --mesh-test.
+
+    Emitted so Module 5 runs LIVE (no SKIP). Boots the real workflow.run
+    through the TOOLS registry; never embeds secrets; exits non-zero on any
+    assertion failure.
+    """
+    tool_names = repr([t.name for t in agent.tools])
+    template = '''"""
+__NAME__ — locked governed runtime (emitted by dm-spec-compiler).
+
+Exposes --self-test and --mesh-test for the kit verification gate. The real
+governance bridge (SecureGate, budgets, audit ledger) is mounted by the
+dm-runner in production; this harness proves the editable zone boots and the
+tool registry is well-formed. Never embed secrets here.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+WORKDIR = os.path.dirname(os.path.abspath(__file__))
+DECLARED_TOOLS = __TOOL_NAMES__
+AGENT_NAME = __NAME_REPR__
+AGENT_ROLE = __ROLE_REPR__
+
+
+def _load_logic():
+    sys.path.insert(0, os.path.join(WORKDIR, "src"))
+    from logic import tools as _tools
+    from logic import workflow as _wf
+    return _tools, _wf
+
+
+def run_once(payload: dict) -> dict:
+    _tools, _wf = _load_logic()
+    return _wf.run(payload)
+
+
+def self_test() -> int:
+    tools, wf = _load_logic()
+    assert "echo" in tools.TOOLS, "echo tool missing"
+    out = tools.TOOLS["echo"]({"probe": "self-test"})
+    assert AGENT_NAME in str(out), "guarded echo path failed"
+    res = wf.run({"message": "self-test", "tenant_id": "tenant-1"})
+    assert isinstance(res, dict), "workflow.run must return a dict"
+    print("SELF-TEST PASS: %s booted, %d tools, workflow OK"
+          % (AGENT_NAME, len(tools.TOOLS)))
+    return 0
+
+
+def mesh_test() -> int:
+    tools, _wf = _load_logic()
+    declared = set(DECLARED_TOOLS)
+    registered = set(tools.TOOLS)
+    missing = declared - registered
+    assert not missing, "declared tools not registered: %s" % missing
+    print("MESH-TEST PASS: %s role=%s tools=%s"
+          % (AGENT_NAME, AGENT_ROLE, sorted(registered)))
+    return 0
+
+
+if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
+    if "--mesh-test" in sys.argv:
+        sys.exit(mesh_test())
+    print(run_once({"message": "hello", "tenant_id": "tenant-1"}))
+'''
+    return (template
+            .replace("__TOOL_NAMES__", tool_names)
+            .replace("__NAME_REPR__", repr(agent.name))
+            .replace("__ROLE_REPR__", repr(agent.role))
+            .replace("__NAME__", agent.name))
+
+
+# --------------------------------------------------------------------------- #
 # Driver                                                                        #
 # --------------------------------------------------------------------------- #
 _LOGIC_FILES = {
@@ -355,6 +449,12 @@ def emit_agent(agent: AgentDef, design: TechDesign, workspace: str) -> list[str]
     with open(wf_path, "w", encoding="utf-8") as f:
         f.write(render_workflow(agent, design))
     written.append(wf_path)
+
+    # locked runtime harness → enables LIVE --self-test / --mesh-test
+    rt_path = os.path.join(ws, "agent.py")
+    with open(rt_path, "w", encoding="utf-8") as f:
+        f.write(render_runtime(agent))
+    written.append(rt_path)
     return written
 
 

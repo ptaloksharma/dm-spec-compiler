@@ -16,9 +16,10 @@ import sys
 from . import __version__
 from .archify_bridge import render_dashboard
 from .canonical import write_canonical
-from .design import compile_design
+from .design import compile_design, compile_design_rich
 from .emit import emit_design
-from .ingest import ingest_dir
+from .ingest import ingest_dir, ingest_file
+from .htmlspec import extract_rich
 from .model import TechDesign
 from .review import is_approved, review_gate
 from .verify import run_all
@@ -39,19 +40,54 @@ def _read_spec_pack(spec_pack: str) -> dict[str, str]:
     return texts
 
 
+def _collect_rich(incoming: str) -> list[dict]:
+    """Deterministically extract rich DOM data from any rich HTML spec pack."""
+    rich: list[dict] = []
+    if not os.path.isdir(incoming):
+        return rich
+    for fname in sorted(os.listdir(incoming)):
+        if not fname.lower().endswith((".html", ".htm")):
+            continue
+        path = os.path.join(incoming, fname)
+        if not os.path.isfile(path):
+            continue
+        try:
+            doc = ingest_file(path)
+        except ValueError:
+            continue
+        if doc.raw_html:
+            payload = extract_rich(fname, doc.raw_html)
+            if payload:
+                rich.append(payload)
+    return rich
+
+
 def cmd_ingest(args) -> int:
     docs = ingest_dir(args.incoming, args.spec_pack)
+    rich = _collect_rich(getattr(args, "incoming", ""))
     for d in docs:
+        tag = " [rich]" if d.kind == "html" and any(
+            r for r in rich) else ""
         print(f"  ✓ {os.path.basename(d.source_path)} → {d.kind} "
               f"({len(d.markdown)} chars, sha {d.sha256[:8]})"
-              + (f"  ⚠ {len(d.warnings)} warnings" if d.warnings else ""))
+              + (f"  ⚠ {len(d.warnings)} warnings" if d.warnings else "") + tag)
+    if rich:
+        kinds = {}
+        for r in rich:
+            kinds[r["__kind__"]] = kinds.get(r["__kind__"], 0) + 1
+        print(f"  ⬢ rich DOM packs detected: "
+              + ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())))
     print(f"ingested {len(docs)} spec(s) → {args.spec_pack}")
     return 0 if docs else 1
 
 
 def cmd_compile(args) -> int:
     texts = _read_spec_pack(args.spec_pack)
-    design = compile_design(texts, mesh_name=args.mesh_name)
+    rich = _collect_rich(getattr(args, "incoming", ""))
+    if rich:
+        design = compile_design_rich(texts, rich, mesh_name=args.mesh_name)
+    else:
+        design = compile_design(texts, mesh_name=args.mesh_name)
     os.makedirs(os.path.dirname(args.design) or ".", exist_ok=True)
     with open(args.design, "w", encoding="utf-8") as f:
         f.write(design.to_yaml())

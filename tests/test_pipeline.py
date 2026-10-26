@@ -140,9 +140,9 @@ class PipelineTest(unittest.TestCase):
             for f in ("state.py", "tools.py", "prompts.py", "workflow.py", "__init__.py"):
                 self.assertTrue(os.path.exists(os.path.join(ws, "src", "logic", f)),
                                 f"{name}/{f}")
-            # editable-zone only: no stray files at workspace root
+            # editable-zone + the locked runtime harness: nothing else
             root_files = set(os.listdir(ws))
-            self.assertEqual(root_files, {"GOAL.yaml", "src"})
+            self.assertEqual(root_files, {"GOAL.yaml", "src", "agent.py"})
 
     def test_emitted_python_parses(self):
         import ast
@@ -235,6 +235,117 @@ class PipelineTest(unittest.TestCase):
         self.assertIn(rc, (0, 1))
         self.assertTrue(os.path.exists(
             os.path.join(self.target, "customs-agent", "src", "logic", "tools.py")))
+
+
+class RichHtmlTest(unittest.TestCase):
+    """Module 1/2 rich πd Genius HTML extraction + Module 4 rich emission."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="dmsc-rich-")
+        self.spec_pack = os.path.join(self.tmp, "spec-pack")
+        self.target = os.path.join(self.tmp, "agents")
+        os.makedirs(self.spec_pack, exist_ok=True)
+        self.incoming = os.path.join(FIXTURES, "incoming-rich")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _design(self):
+        from dm_spec_compiler.cli import _collect_rich
+        from dm_spec_compiler.design import compile_design_rich
+        ingest_dir(self.incoming, self.spec_pack)
+        texts = {f: open(os.path.join(self.spec_pack, f), encoding="utf-8").read()
+                 for f in os.listdir(self.spec_pack) if f.endswith(".md")}
+        return compile_design_rich(texts, _collect_rich(self.incoming),
+                                   mesh_name="inventory-mesh")
+
+    def test_rich_entity_and_state_extraction(self):
+        a = self._design().agents[0]
+        # entities with typed fields + scope
+        inv = next(e for e in a.entities if e.name == "inventory_item")
+        self.assertEqual(inv.scope, "v1")
+        self.assertEqual(inv.owner, "Inventory Agent")
+        typed = {tf.name: tf.type for tf in inv.typed_fields}
+        self.assertEqual(typed.get("on_hand"), "integer")
+        self.assertIn("version", typed)
+        # states incl terminal flags
+        term = {s.id for s in a.states if s.terminal}
+        self.assertEqual(term, {"T05", "T06"})
+        # transitions incl backward T10b + Any-wildcard T12
+        tids = {t.id for t in a.transitions}
+        self.assertIn("T10b", tids)
+        self.assertIn("T12", tids)
+        t10b = next(t for t in a.transitions if t.id == "T10b")
+        self.assertEqual(t10b.from_state, "Available")
+        self.assertEqual(t10b.to_state, "Counted")
+        # holds + invariants
+        self.assertEqual({h.hold_type for h in a.holds},
+                         {"quality_hold", "cycle_count_hold"})
+        inv_ids = {i.id for i in a.invariant_defs}
+        self.assertEqual(inv_ids, {"I-01", "I-02", "I-03", "I-04"})
+
+    def test_rich_entry_points_and_autonomy(self):
+        a = self._design().agents[0]
+        eps = {e.id: e for e in a.entry_points}
+        self.assertIn("EP-RSV-01", eps)
+        rsv = eps["EP-RSV-01"]
+        self.assertEqual(rsv.kind, "command")
+        self.assertEqual(rsv.transition, "Available -> Reserved")
+        self.assertTrue(rsv.route.startswith("POST"))
+        autos = rsv.autonomy_flags()
+        self.assertIn("ai_decides", autos)
+        self.assertIn("ai_suggests", autos)
+        self.assertTrue(rsv.idempotency)
+        # query EP
+        self.assertEqual(eps["EP-QRY-01"].kind, "query")
+        # one tool per EP
+        ep_tools = {t.entry_point for t in a.tools if t.entry_point}
+        self.assertIn("EP-RSV-01", ep_tools)
+
+    def test_rich_ears_requirements(self):
+        a = self._design().agents[0]
+        ears = {e.id: e for e in a.ears_requirements}
+        self.assertIn("REQ-01", ears)
+        self.assertEqual(ears["REQ-01"].posture, "Automate")
+        self.assertEqual(ears["REQ-02"].posture, "Detect + escalate")
+        self.assertTrue(any(c.tag == "Unwanted"
+                            for c in ears["REQ-02"].clauses))
+        self.assertTrue(len(a.nfr_requirements) >= 2)
+
+    def test_rich_emission_production_artifacts(self):
+        import ast
+        d = self._design()
+        out = emit.emit_design(d, self.target)
+        ws = os.path.join(self.target, d.agents[0].name)
+        for f in out[d.agents[0].name]:
+            if f.endswith(".py"):
+                ast.parse(open(f, encoding="utf-8").read())
+        st = open(os.path.join(ws, "src/logic/state.py")).read()
+        self.assertIn("class InventoryItem", st)
+        self.assertIn("active_holds", st)
+        self.assertIn("version: int", st)
+        self.assertIn("check_i_03", st)
+        tp = open(os.path.join(ws, "src/logic/tools.py")).read()
+        self.assertIn("_begin_idempotent", tp)
+        self.assertIn("_check_version", tp)
+        self.assertIn("_emit_outbox", tp)
+        pp = open(os.path.join(ws, "src/logic/prompts.py")).read()
+        self.assertIn("UNTRUSTED TEXT RULE", pp)
+        self.assertIn("PROMPT_EP_RSV_01", pp)
+        wf = open(os.path.join(ws, "src/logic/workflow.py")).read()
+        self.assertIn("active_holds", wf)          # I-03
+        self.assertIn("recount_requested", wf)     # I-04
+        self.assertIn("needs_data", wf)
+
+    def test_rich_runtime_live_pass(self):
+        d = self._design()
+        emit.emit_design(d, self.target)
+        ws = os.path.join(self.target, d.agents[0].name)
+        for flag in ("--self-test", "--mesh-test"):
+            p = subprocess.run([sys.executable, "agent.py", flag], cwd=ws,
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0,
+                             f"{flag} failed: {p.stdout}{p.stderr}")
 
 
 if __name__ == "__main__":
