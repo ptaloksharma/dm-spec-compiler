@@ -140,9 +140,9 @@ class PipelineTest(unittest.TestCase):
             for f in ("state.py", "tools.py", "prompts.py", "workflow.py", "__init__.py"):
                 self.assertTrue(os.path.exists(os.path.join(ws, "src", "logic", f)),
                                 f"{name}/{f}")
-            # editable-zone + the locked runtime harness: nothing else
+            # editable-zone + the locked runtime harness + intent source: nothing else
             root_files = set(os.listdir(ws))
-            self.assertEqual(root_files, {"GOAL.yaml", "src", "agent.py"})
+            self.assertEqual(root_files, {"GOAL.yaml", "intent.txt", "src", "agent.py"})
 
     def test_emitted_python_parses(self):
         import ast
@@ -161,10 +161,15 @@ class PipelineTest(unittest.TestCase):
         emit.emit_design(design, self.target)
         goal = yaml.safe_load(open(os.path.join(
             self.target, "fleet-orchestrator", "GOAL.yaml"), encoding="utf-8"))
+        # kit-compiled SIGNED contract: whitelist schema + provenance binding
         self.assertTrue(goal["failClosed"])
         self.assertEqual(goal["sanitization"], "strict")
-        self.assertEqual(goal["hitlThresholdEur"], 25000)
         self.assertIn("assign_vehicle", goal["allowedTools"])
+        self.assertIn("configProvenance", goal)  # signed (lint-policy gate)
+        # hitl threshold is carried in the logic layer, not the contract
+        st = open(os.path.join(self.target, "fleet-orchestrator",
+                               "src", "logic", "state.py"), encoding="utf-8").read()
+        self.assertIn("HOLD_STATES", st)
 
     def test_emit_refuses_without_approval(self):
         design = self._compile()  # no approval
@@ -439,6 +444,63 @@ class ArchimateProvisionTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(a_dir, "schema.sql")))
         self.assertTrue(os.path.exists(os.path.join(
             self.target, "inventory-mesh-agent", "src", "logic", "workflow.py")))
+
+
+class GovernanceGateTest(unittest.TestCase):
+    """v0.4.1 — mesh registry registration + lint-policy governance gate."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="dmsc-gov-")
+        self.spec_pack = os.path.join(self.tmp, "spec-pack")
+        self.target = os.path.join(self.tmp, "agents")
+        self.incoming_specs = os.path.join(FIXTURES, "incoming-specs")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _design(self):
+        ingest_dir(self.incoming_specs, self.spec_pack)
+        texts = {f: open(os.path.join(self.spec_pack, f), encoding="utf-8").read()
+                 for f in os.listdir(self.spec_pack) if f.endswith(".md")}
+        return compile_design(texts, mesh_name="logistics-mesh")
+
+    def test_emit_produces_signed_contract(self):
+        import yaml
+        d = self._design()
+        emit.emit_design(d, self.target)
+        ws = os.path.join(self.target, "fleet-orchestrator")
+        self.assertTrue(os.path.exists(os.path.join(ws, "intent.txt")))
+        goal = yaml.safe_load(open(os.path.join(ws, "GOAL.yaml")).read())
+        self.assertIn("configProvenance", goal)  # SIGNED by kit compiler
+
+    def test_lint_policy_passes_on_emitted_agent(self):
+        from dm_spec_compiler.verify import lint_policy
+        d = self._design()
+        emit.emit_design(d, self.target)
+        r = lint_policy(os.path.join(self.target, "fleet-orchestrator"))
+        self.assertEqual(r.status, "PASS", r.detail)
+
+    def test_mesh_register_multi_agent(self):
+        from dm_spec_compiler.verify import register_mesh_agents, mesh_verify
+        d = self._design()
+        emit.emit_design(d, self.target)
+        r = register_mesh_agents(self.target, d.agents)
+        self.assertEqual(r.status, "PASS", r.detail)
+        reg = os.path.join(self.target, "erp-mesh-registry.json")
+        self.assertTrue(os.path.exists(reg))
+        import json
+        data = json.load(open(reg))
+        self.assertEqual(len(data["agents"]), 3)
+        # mesh verify now validates REAL edges
+        v = mesh_verify(self.target)
+        self.assertEqual(v.status, "PASS", v.detail)
+
+    def test_mesh_register_skips_single_agent(self):
+        from dm_spec_compiler.verify import register_mesh_agents
+        d = self._design()
+        single = [a for a in d.agents if a.name == "customs-agent"]
+        r = register_mesh_agents(self.target, single)
+        self.assertEqual(r.status, "SKIP")
 
 
 if __name__ == "__main__":

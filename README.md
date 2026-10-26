@@ -79,7 +79,23 @@ dm-agent mesh verify · agent.py --self-test/--mesh-test · archify as-built das
   instead of SKIP. Legacy (sparse-markdown) models still use the v0.2
   templates; rich models are detected and upgraded automatically.
 
-### v0.4.0 — ArchiMate modeling, architectural gate, infrastructure provisioning
+### v0.4.1 — real governance gates + mesh registration
+
+* **Signed contract emission** (`emit.py`): every agent gets an `intent.txt`
+  (human source-of-truth) and a **kit-signed** `GOAL.yaml` — the kit's
+  `intent_contract.compile_intent_file` stamps a SHA-256 `configProvenance`
+  binding, which is **required** by the lint-policy governance gate.
+* **lint-policy gate** (`verify.lint_policy`): the real fail-closed governance
+  gate (secret sprawl + contract drift + DSH rules) runs on every emitted
+  workspace. This replaces the earlier boot-only checks with the kit's
+  **actual compliance bar**.
+* **Mesh registry registration** (`verify.register_mesh_agents`): on
+  multi-agent meshes, every agent is registered into `erp-mesh-registry.json`
+  (`mesh init` + `mesh register` with `--role`, `--mode`, `--downstream`).
+  The subsequent `mesh verify` now validates **real cross-agent edges** instead
+  of an empty registry. Single-agent meshes skip registration (no edges).
+* `run` order now: ingest → compile → review → provision → emit →
+  **register_mesh → mesh_verify → lint_policy per agent → self/mesh tests → archify**.
 
 * **ArchiMate layered view** (`archify_bridge.view_archimate`): the dashboard
   gains a 5th tab mapping the design onto standard ArchiMate layers —

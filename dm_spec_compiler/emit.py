@@ -52,6 +52,27 @@ def render_goal(agent: AgentDef, design: TechDesign) -> str:
     return yaml.safe_dump(goal, sort_keys=False)
 
 
+def render_intent(agent: AgentDef, design: TechDesign) -> str:
+    """Human source-of-truth intent for the kit's contract compiler.
+
+    The kit's intent_contract compiler turns this into a SIGNED GOAL.yaml
+    (SHA-256 configProvenance binding) — required for the lint-policy gate.
+    """
+    tools = ", ".join(t.name for t in agent.tools) or "echo"
+    egress = ", ".join(agent.allowed_egress)
+    lines = [
+        f"objective: {agent.objective or agent.use_case or agent.name + ' agent'}",
+        f"tier: {agent.tier}",
+        "owner: architect",
+        "tokenBudget: 200000",
+        f"allowedTools: {tools}",
+        f"egressAllow: {egress}",
+        "failClosed: true",
+        "sanitization: strict",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 # --------------------------------------------------------------------------- #
 # src/logic/state.py                                                            #
 # --------------------------------------------------------------------------- #
@@ -435,8 +456,26 @@ def emit_agent(agent: AgentDef, design: TechDesign, workspace: str) -> list[str]
 
     written: list[str] = []
     goal_path = os.path.join(ws, "GOAL.yaml")
-    with open(goal_path, "w", encoding="utf-8") as f:
-        f.write(render_goal(agent, design))
+    intent_path = os.path.join(ws, "intent.txt")
+
+    # intent.txt is the human source-of-truth; GOAL.yaml is compiled from it
+    # through the kit's intent_contract so the contract is SIGNED (SHA-256
+    # configProvenance) — required by the lint-policy governance gate.
+    with open(intent_path, "w", encoding="utf-8") as f:
+        f.write(render_intent(agent, design))
+    written.append(intent_path)
+
+    signed = False
+    try:
+        from dm_agent_governance import intent_contract as _ic  # kit lib
+        _ic.compile_intent_file(intent_path, goal_path, overwrite=True,
+                                environment=os.environ.get("DM_ENVIRONMENT", "dev"))
+        signed = True
+    except Exception:
+        pass
+    if not signed:
+        with open(goal_path, "w", encoding="utf-8") as f:
+            f.write(render_goal(agent, design))
     written.append(goal_path)
 
     for fname, renderer in _LOGIC_FILES.items():

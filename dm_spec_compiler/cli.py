@@ -154,7 +154,14 @@ def cmd_verify(args) -> int:
     agent_ws = [os.path.join(args.target, d)
                 for d in sorted(os.listdir(args.target))
                 if os.path.isdir(os.path.join(args.target, d))]
-    results = run_all(args.target, agent_ws)
+    agents = None
+    if os.path.exists(args.design):
+        try:
+            agents = TechDesign.from_yaml(
+                open(args.design, encoding="utf-8").read()).agents
+        except Exception:
+            agents = None
+    results = run_all(args.target, agent_ws, agents=agents)
     worst = 0
     for r in results:
         icon = {"PASS": "✓", "FAIL": "✗", "SKIP": "–"}[r.status]

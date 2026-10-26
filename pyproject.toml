@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dm-spec-compiler"
-version = "0.4.0"
+version = "0.4.1"
 description = "Standalone universal spec-to-code & architecture compiler for dm-agent-kit agent workspaces. Deterministic parsers, Architect-in-the-Loop, zero LLM codegen."
 authors = [{ name = "DM Digital Solutions B.V." }]
 requires-python = ">=3.11"
