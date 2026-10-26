@@ -78,6 +78,27 @@ dm-agent mesh verify · agent.py --self-test/--mesh-test · archify as-built das
   exposing `--self-test` and `--mesh-test`, so Module 5 runs **LIVE (PASS)**
   instead of SKIP. Legacy (sparse-markdown) models still use the v0.2
   templates; rich models are detected and upgraded automatically.
+
+### v0.4.0 — ArchiMate modeling, architectural gate, infrastructure provisioning
+
+* **ArchiMate layered view** (`archify_bridge.view_archimate`): the dashboard
+  gains a 5th tab mapping the design onto standard ArchiMate layers —
+  **Business** (Business Process from the primary objective), **Application**
+  (Application Component per agent + Application Service per entry point),
+  **Data** (Data Object per entity), and **Technology** (Infrastructure Node
+  per isolated schema), with realized/persisted-in relationships.
+* **Architectural review & modification gate** (`review.py`): the architect
+  inspects `TECH_DESIGN.yaml` alongside the ArchiMate diagram; `[e]dit`
+  re-validates and re-renders the diagram in the loop; nothing proceeds until
+  explicit sign-off writes the sha256-bound `TECH_DESIGN.yaml.approved`.
+* **Infrastructure provisioning hook** (`provision.py`, `dm-spec-compiler
+  provision`): runs immediately after approval, **before** code emission.
+  Emits per-agent `infra/<agent>/{schema.sql, main.bicep, main.tf,
+  PROVISIONING.md}` — an idempotent isolated private schema (deterministic
+  `<name>_schema`) with DDL for every typed entity. Each artifact records the
+  approving design's sha256, so provisioning is provably bound to the
+  signed-off design. Refused (fail-closed) without the approval stamp.
+  `run` order: ingest → compile → review → **provision** → emit → verify.
 * **Deterministic extraction** — states (`T01..`), entry points (`EP-XXX`),
   tools, entities, invariants and cross-agent edges all come from a documented
   markdown grammar. No LLM guessing. (An optional LLM pass may later draft

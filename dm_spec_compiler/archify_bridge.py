@@ -15,6 +15,10 @@ import os
 
 from .model import TechDesign
 
+
+def _esc(s: str) -> str:
+    return s.replace('"', "'").replace("<", "(").replace(">", ")")
+
 _HTML = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Spec Design Architecture Preview</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
@@ -35,11 +39,13 @@ h1{font-size:1.1rem}.tabs{display:flex;gap:8px;margin:12px 0}
   <button onclick="show(1,this)">🔄 Workflow Lifecycle</button>
   <button onclick="show(2,this)">📊 Data Flow</button>
   <button onclick="show(3,this)">☁️ Cloud Infrastructure</button>
+  <button onclick="show(4,this)">🏛️ ArchiMate Layers</button>
 </div>
 <div class="view active"><pre class="mermaid">__VIEW0__</pre></div>
 <div class="view"><pre class="mermaid">__VIEW1__</pre></div>
 <div class="view"><pre class="mermaid">__VIEW2__</pre></div>
 <div class="view"><pre class="mermaid">__VIEW3__</pre></div>
+<div class="view"><pre class="mermaid">__VIEW4__</pre></div>
 <script>
 mermaid.initialize({startOnLoad:true,theme:'dark'});
 function show(i,btn){
@@ -83,6 +89,7 @@ def render_dashboard(design: TechDesign, out_path: str) -> dict:
     except Exception:
         views = [_fallback_mesh(design), _fallback_workflow(design),
                  _fallback_dataflow(design), _fallback_cloud(design)]
+    views.append(view_archimate(design))  # VIEW4 — ArchiMate layering
 
     payload = json.dumps(spec, sort_keys=True, default=str).encode()
     spec_hash = hashlib.sha256(payload).hexdigest()
@@ -92,7 +99,8 @@ def render_dashboard(design: TechDesign, out_path: str) -> dict:
             .replace("__VIEW0__", views[0])
             .replace("__VIEW1__", views[1])
             .replace("__VIEW2__", views[2])
-            .replace("__VIEW3__", views[3]))
+            .replace("__VIEW3__", views[3])
+            .replace("__VIEW4__", views[4]))
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -102,12 +110,69 @@ def render_dashboard(design: TechDesign, out_path: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# ArchiMate layered view (Business / Application / Data / Technology)          #
+# --------------------------------------------------------------------------- #
+def view_archimate(design: TechDesign) -> str:
+    """Map the design onto standard ArchiMate layers as a Mermaid subgraph stack."""
+    esc = _esc
+
+    def nid(s: str) -> str:
+        return s.replace("-", "_").replace(" ", "_")
+
+    biz: list[str] = []
+    app: list[str] = []
+    data: list[str] = []
+    tech: list[str] = []
+    links: list[str] = []
+
+    for a in design.agents:
+        an = nid(a.name)
+        # Application layer: the agent component + its entry points (app services)
+        app.append(f'    {an}[\"⚙️ {esc(a.name)}<br/><<Application Component>>\"]')
+        for ep in a.entry_points:
+            epn = nid(f"{a.name}_{ep.id}")
+            app.append(f'    {epn}[\"{esc(ep.id)} {esc(ep.name)}<br/><<Application Service>>\"]')
+            links.append(f"  {an} --> {epn}")
+        # Data layer: entities
+        for e in a.entities:
+            dn = nid(f"{a.name}_{e.name}")
+            data.append(f'    {dn}[(\"🗄 {esc(e.name)}<br/><<Data Object>>\")]')
+            links.append(f"  {an} --> {dn}")
+        # Technology layer: isolated schema per agent
+        sn = nid(f"{a.name}_schema")
+        tech.append(f'    {sn}[[\"🛢 {esc(_schema_for(a))}<br/><<Infrastructure Node>>\"]]')
+        for e in a.entities:
+            links.append(f"  {nid(f'{a.name}_{e.name}')} -.->|persisted in| {sn}")
+
+    # Business layer: one business process per mesh (from the coordinator /
+    # first agent's objective), linked down to its application component
+    if design.agents:
+        primary = design.agents[0]
+        bp = f'biz_{nid(primary.name)}'
+        label = (primary.objective or primary.use_case or design.mesh_name)[:48]
+        biz.append(f'    {bp}[\"🎯 {esc(label)}<br/><<Business Process>>\"]')
+        links.append(f"  {bp} --> {nid(primary.name)}")
+
+    lines = ["graph TD",
+             '  subgraph BIZ[\"🏛 Business Layer\"]'] + (biz or ["    none_b[no business process]"]) + ["  end",
+             '  subgraph APP[\"🧩 Application Layer\"]'] + (app or ["    none_a[no components]"]) + ["  end",
+             '  subgraph DATA[\"🗄 Data Layer\"]'] + (data or ["    none_d[no data objects]"]) + ["  end",
+             '  subgraph TECH[\"🛢 Technology Layer\"]'] + (tech or ["    none_t[no infra nodes]"]) + ["  end"]
+    lines += links
+    lines.append("  classDef biz fill:#1e3a5f,stroke:#60a5fa,color:#e2e8f0;")
+    return "\n".join(lines)
+
+
+def _schema_for(agent) -> str:
+    """Deterministic isolated-schema name for an agent (no domain hardcoding)."""
+    base = agent.name.replace("-", "_")
+    base = base[:-6] if base.endswith("_agent") else base
+    return f"{base}_schema"
+
+
+# --------------------------------------------------------------------------- #
 # Self-contained fallbacks (used only when the kit archify is not importable) #
 # --------------------------------------------------------------------------- #
-def _esc(s: str) -> str:
-    return s.replace('"', "'").replace("<", "(").replace(">", ")")
-
-
 def _fallback_mesh(design: TechDesign) -> str:
     lines = ["graph TD"]
     for a in design.agents:

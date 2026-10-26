@@ -21,6 +21,7 @@ from .emit import emit_design
 from .ingest import ingest_dir, ingest_file
 from .htmlspec import extract_rich
 from .model import TechDesign
+from .provision import design_sha256, provision_design
 from .review import is_approved, review_gate
 from .verify import run_all
 
@@ -118,6 +119,23 @@ def cmd_review(args) -> int:
     return 2
 
 
+def cmd_provision(args) -> int:
+    if not os.path.exists(args.design):
+        raise SystemExit(f"{args.design} not found — run `compile` first")
+    if not args.force and not is_approved(args.design):
+        raise SystemExit(
+            "REFUSED — infrastructure provisioning requires the architect's "
+            "approval stamp. Run `review` first (or --force).")
+    design = TechDesign.from_yaml(open(args.design, encoding="utf-8").read())
+    sha = design_sha256(args.design)
+    out = provision_design(design, args.infra, design_sha=sha, only=args.agent)
+    for name, files in out.items():
+        print(f"  ⛁ provisioned {name}: {len(files)} artifacts")
+        for f in files:
+            print(f"      {f}")
+    return 0
+
+
 def cmd_emit(args) -> int:
     design = TechDesign.from_yaml(open(args.design, encoding="utf-8").read())
     if not args.force and not is_approved(args.design):
@@ -156,6 +174,9 @@ def cmd_run(args) -> int:
     rc = cmd_review(args)
     if rc:
         return rc
+    rc = cmd_provision(args)   # infrastructure BEFORE code emission
+    if rc:
+        return rc
     rc = cmd_emit(args)
     if rc:
         return rc
@@ -175,14 +196,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--dashboard", default="./blueprints/architecture-dashboard.html")
         sp.add_argument("--mesh-name", default="spec-mesh")
         sp.add_argument("--target", default="./agents")
+        sp.add_argument("--infra", default="./infra")
 
-    for name in ("ingest", "compile", "review", "emit", "verify", "run"):
+    for name in ("ingest", "compile", "review", "provision", "emit", "verify", "run"):
         sp = sub.add_parser(name)
         common(sp)
         if name in ("review", "run"):
             sp.add_argument("--yes", action="store_true",
                             help="non-interactive auto-approve (architect gate)")
-        if name in ("emit", "run"):
+        if name in ("provision", "emit", "run"):
             sp.add_argument("--force", action="store_true",
                             help="bypass the approval check")
             sp.add_argument("--agent", action="append", default=None,

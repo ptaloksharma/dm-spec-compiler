@@ -348,5 +348,98 @@ class RichHtmlTest(unittest.TestCase):
                              f"{flag} failed: {p.stdout}{p.stderr}")
 
 
+class ArchimateProvisionTest(unittest.TestCase):
+    """ArchiMate layered view + infrastructure provisioning hook."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="dmsc-ap-")
+        self.spec_pack = os.path.join(self.tmp, "spec-pack")
+        self.target = os.path.join(self.tmp, "agents")
+        self.infra = os.path.join(self.tmp, "infra")
+        os.makedirs(self.spec_pack, exist_ok=True)
+        self.incoming = os.path.join(FIXTURES, "incoming-rich")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _design(self):
+        from dm_spec_compiler.cli import _collect_rich
+        from dm_spec_compiler.design import compile_design_rich
+        ingest_dir(self.incoming, self.spec_pack)
+        texts = {f: open(os.path.join(self.spec_pack, f), encoding="utf-8").read()
+                 for f in os.listdir(self.spec_pack) if f.endswith(".md")}
+        return compile_design_rich(texts, _collect_rich(self.incoming),
+                                   mesh_name="inventory-mesh")
+
+    def test_archimate_layers_present(self):
+        from dm_spec_compiler.archify_bridge import view_archimate
+        am = view_archimate(self._design())
+        for layer in ("Business Layer", "Application Layer",
+                      "Data Layer", "Technology Layer"):
+            self.assertIn(layer, am, layer)
+        self.assertIn("Application Component", am)
+        self.assertIn("Application Service", am)   # entry points
+        self.assertIn("Data Object", am)           # entities
+        self.assertIn("Infrastructure Node", am)   # isolated schema
+        self.assertIn("inventory_mesh_schema", am)  # deterministic schema name
+
+    def test_dashboard_has_archimate_view(self):
+        from dm_spec_compiler.archify_bridge import render_dashboard
+        out = os.path.join(self.tmp, "dash.html")
+        render_dashboard(self._design(), out)
+        html = open(out).read()
+        self.assertIn("ArchiMate Layers", html)
+        self.assertIn("Business Layer", html)
+
+    def test_provisioning_artifacts_and_hash_binding(self):
+        from dm_spec_compiler.provision import provision_design, design_sha256, _schema_for
+        d = self._design()
+        # write + approve a real design file to bind the hash
+        dpath = os.path.join(self.tmp, "TECH_DESIGN.yaml")
+        open(dpath, "w").write(d.to_yaml())
+        sha = design_sha256(dpath)
+        out = provision_design(d, self.infra, design_sha=sha)
+        a = d.agents[0]
+        self.assertEqual(_schema_for(a), "inventory_mesh_schema")
+        for f in out[a.name]:
+            self.assertTrue(os.path.exists(f), f)
+        sql = open(os.path.join(self.infra, a.name, "schema.sql")).read()
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS inventory_mesh_schema", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS inventory_mesh_schema.inventory_items", sql)
+        self.assertIn("on_hand INTEGER", sql)
+        md = open(os.path.join(self.infra, a.name, "PROVISIONING.md")).read()
+        self.assertIn(sha, md)  # provably bound to the approved design
+        # bicep + tf present and reference the schema
+        self.assertIn("inventory_mesh_schema",
+                      open(os.path.join(self.infra, a.name, "main.bicep")).read())
+        self.assertIn("inventory_mesh_schema",
+                      open(os.path.join(self.infra, a.name, "main.tf")).read())
+
+    def test_provision_refused_without_approval(self):
+        import argparse
+        from dm_spec_compiler import cli
+        dpath = os.path.join(self.tmp, "TECH_DESIGN.yaml")
+        open(dpath, "w").write(self._design().to_yaml())  # not approved
+        ns = argparse.Namespace(design=dpath, infra=self.infra, force=False, agent=None)
+        with self.assertRaises(SystemExit):
+            cli.cmd_provision(ns)
+
+    def test_cli_run_orders_provision_before_emit(self):
+        import argparse
+        ns = argparse.Namespace(
+            incoming=self.incoming, spec_pack=self.spec_pack,
+            design=os.path.join(self.tmp, "TECH_DESIGN.yaml"),
+            dashboard=os.path.join(self.tmp, "dash.html"),
+            mesh_name="inventory-mesh", target=self.target, infra=self.infra,
+            yes=True, force=False, agent=None)
+        rc = cli.cmd_run(ns)
+        self.assertIn(rc, (0, 1))  # verify stage may SKIP kit binary on bare host
+        # both provisioned infra AND emitted code exist → ordering executed
+        a_dir = os.path.join(self.infra, "inventory-mesh-agent")
+        self.assertTrue(os.path.exists(os.path.join(a_dir, "schema.sql")))
+        self.assertTrue(os.path.exists(os.path.join(
+            self.target, "inventory-mesh-agent", "src", "logic", "workflow.py")))
+
+
 if __name__ == "__main__":
     unittest.main()
