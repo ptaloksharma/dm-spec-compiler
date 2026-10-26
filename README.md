@@ -16,21 +16,24 @@ all just `# Agent:` blocks in a spec.
 
 ```
 blueprints/incoming-specs/   raw spec packs (.html .md .pdf)
-        │  Module 1 · ingest.py        deterministic → clean markdown + provenance
+        │  Module 1 · ingest.py        deterministic → clean per-source markdown + provenance
         ▼
 blueprints/spec-pack/*.md
         │  Module 2 · design.py        heading/regex grammar → validated model.py (pydantic)
+        │             canonical.py     → requirements.md · entities.md · entry-points.md
+        │             archify_bridge.py→ architecture-dashboard.html (design-time preview)
         ▼
-blueprints/TECH_DESIGN.yaml
-        │  Module 3 · review.py        Architect-in-the-Loop (sha-bound approval stamp)
+blueprints/TECH_DESIGN.yaml   +   blueprints/architecture-dashboard.html
+        │  Module 3 · review.py        Architect-in-the-Loop: design + diagram side-by-side,
+        │                              [a]pprove / [e]dit→re-validate+re-render / [q]uit
         ▼
-TECH_DESIGN.yaml.approved
+TECH_DESIGN.yaml.approved   (sha256-bound to the design bytes)
         │  Module 4 · emit.py          deterministic renderers → editable zone ONLY
         ▼
 agents/<name>/GOAL.yaml  +  agents/<name>/src/logic/{state,tools,prompts,workflow}.py
         │  Module 5 · verify.py        kit hooks via ONE seam (never vendored)
         ▼
-dm-agent mesh verify · agent.py --self-test/--mesh-test · archify dashboard
+dm-agent mesh verify · agent.py --self-test/--mesh-test · archify as-built dashboard
 ```
 
 ### Hard boundaries (fail-closed)
@@ -46,6 +49,11 @@ dm-agent mesh verify · agent.py --self-test/--mesh-test · archify dashboard
 * **Approval gate** — `emit` refuses unless `TECH_DESIGN.yaml` is approved.
   The approval stamp (`TECH_DESIGN.yaml.approved`) binds the sha256 of the
   design bytes; editing the YAML after approval invalidates it.
+* **workflow.py is a real LangGraph `StateGraph`** — one node per declared
+  state, a static `NEXT` transition table, and `add_conditional_edges` routing
+  that branches to `hitl` on HOLD states and `end` at the terminal. It
+  compiles and executes against a live `langgraph` install, and degrades to a
+  deterministic walk when langgraph is absent (scaffold-time safe).
 * **Deterministic extraction** — states (`T01..`), entry points (`EP-XXX`),
   tools, entities, invariants and cross-agent edges all come from a documented
   markdown grammar. No LLM guessing. (An optional LLM pass may later draft

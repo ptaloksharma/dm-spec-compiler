@@ -60,8 +60,14 @@ def approve(design_path: str) -> None:
         f.write(f"APPROVED {sha}\n")
 
 
-def review_gate(design_path: str, *, assume_yes: bool = False) -> bool:
-    """Run the checkpoint. Returns True iff approved (side effect: writes stamp)."""
+def review_gate(design_path: str, *, assume_yes: bool = False,
+                dashboard_path: str | None = None) -> bool:
+    """Run the checkpoint. Returns True iff approved (side effect: writes stamp).
+
+    On a TTY this is a loop: show summary + dashboard location, then
+    [a]pprove / [e]dit / [q]uit. Edit re-validates AND re-renders the
+    dashboard so the architect always sees design & diagram in sync.
+    """
     text = open(design_path, encoding="utf-8").read()
     design = TechDesign.from_yaml(text)  # re-validate whatever is on disk
 
@@ -73,8 +79,10 @@ def review_gate(design_path: str, *, assume_yes: bool = False) -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False  # non-interactive, no stamp → blocked
 
-    print(render_summary(design))
     while True:
+        print(render_summary(design))
+        if dashboard_path:
+            print(f"\n  🗺  Archify diagram (open in browser): file://{os.path.abspath(dashboard_path)}")
         choice = input("\nArchitect review — [a]pprove / [e]dit / [q]uit: ").strip().lower()
         if choice in ("a", "approve", ""):
             approve(design_path)
@@ -89,4 +97,7 @@ def review_gate(design_path: str, *, assume_yes: bool = False) -> bool:
             except Exception as exc:  # validation failure → stay in loop
                 print(f"  ✗ edited design failed validation: {exc}")
                 continue
-            print(render_summary(design))
+            if dashboard_path:  # keep diagram in sync with the edit
+                from .archify_bridge import render_dashboard
+                seal = render_dashboard(design, dashboard_path)
+                print(f"  ↻ diagram re-rendered (spec {seal['spec_hash'][:12]})")

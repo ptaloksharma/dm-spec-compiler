@@ -14,6 +14,8 @@ import os
 import sys
 
 from . import __version__
+from .archify_bridge import render_dashboard
+from .canonical import write_canonical
 from .design import compile_design
 from .emit import emit_design
 from .ingest import ingest_dir
@@ -21,10 +23,14 @@ from .model import TechDesign
 from .review import is_approved, review_gate
 from .verify import run_all
 
+_CANONICAL = {"requirements.md", "entities.md", "entry-points.md"}
+
 
 def _read_spec_pack(spec_pack: str) -> dict[str, str]:
     texts: dict[str, str] = {}
     for fname in sorted(os.listdir(spec_pack)):
+        if fname in _CANONICAL:
+            continue  # derived views, not raw specs — never re-ingest
         if fname.endswith((".md", ".markdown")):
             texts[fname] = open(os.path.join(spec_pack, fname),
                                 encoding="utf-8").read()
@@ -49,8 +55,14 @@ def cmd_compile(args) -> int:
     os.makedirs(os.path.dirname(args.design) or ".", exist_ok=True)
     with open(args.design, "w", encoding="utf-8") as f:
         f.write(design.to_yaml())
+    # canonical views (requirements/entities/entry-points) stay in sync
+    for path in write_canonical(design, args.spec_pack):
+        print(f"  ✓ canonical → {path}")
+    # Archify design-time dashboard (review aid, regenerated every compile)
+    seal = render_dashboard(design, args.dashboard)
     print(f"TECH_DESIGN.yaml written → {args.design} "
           f"({len(design.agents)} agents)")
+    print(f"  🗺  Archify dashboard → {seal['path']} (spec {seal['spec_hash'][:12]})")
     for a in design.agents:
         print(f"  • {a.name} [{a.role}/{a.tier}] states={len(a.states)} "
               f"tools={len(a.tools)} eps={len(a.entry_points)}")
@@ -60,7 +72,8 @@ def cmd_compile(args) -> int:
 def cmd_review(args) -> int:
     if not os.path.exists(args.design):
         raise SystemExit(f"{args.design} not found — run `compile` first")
-    ok = review_gate(args.design, assume_yes=args.yes)
+    ok = review_gate(args.design, assume_yes=args.yes,
+                     dashboard_path=args.dashboard)
     if ok:
         print(f"APPROVED → {args.design}.approved")
         return 0
@@ -123,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--incoming", default="./blueprints/incoming-specs")
         sp.add_argument("--spec-pack", default="./blueprints/spec-pack")
         sp.add_argument("--design", default="./blueprints/TECH_DESIGN.yaml")
+        sp.add_argument("--dashboard", default="./blueprints/architecture-dashboard.html")
         sp.add_argument("--mesh-name", default="spec-mesh")
         sp.add_argument("--target", default="./agents")
 

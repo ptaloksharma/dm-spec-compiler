@@ -45,14 +45,39 @@ class PipelineTest(unittest.TestCase):
     # Module 1
     def test_ingest_html_to_markdown(self):
         docs = self._ingest()
-        self.assertEqual(len(docs), 1)
-        doc = docs[0]
-        self.assertEqual(doc.kind, "html")
+        html = [d for d in docs if d.kind == "html"]
+        self.assertEqual(len(html), 1)
+        doc = html[0]
         self.assertIn("# Agent: logistics-coordinator", doc.markdown)
         self.assertNotIn("<script", doc.markdown)
         self.assertNotIn("track()", doc.markdown)
         self.assertTrue(os.path.exists(
             os.path.join(self.spec_pack, "logistics-mesh.md")))
+
+    def test_ingest_pdf_to_markdown(self):
+        docs = self._ingest()
+        pdf = [d for d in docs if d.kind == "pdf"]
+        self.assertEqual(len(pdf), 1)
+        self.assertIn("Warehouse Robotics Mesh", pdf[0].markdown)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.spec_pack, "warehouse-robotics.md")))
+
+    def test_canonical_spec_files_written(self):
+        import argparse
+        self._ingest()
+        ns = argparse.Namespace(spec_pack=self.spec_pack, design=self.design_path,
+                                mesh_name="logistics-mesh",
+                                dashboard=os.path.join(self.tmp, "dash.html"))
+        cli.cmd_compile(ns)  # canonical files are written at compile, not ingest
+        for canonical in ("requirements.md", "entities.md", "entry-points.md"):
+            self.assertTrue(os.path.exists(os.path.join(self.spec_pack, canonical)),
+                            canonical)
+        reqs = open(os.path.join(self.spec_pack, "requirements.md"), encoding="utf-8").read()
+        self.assertIn("logistics-coordinator", reqs)
+        ents = open(os.path.join(self.spec_pack, "entities.md"), encoding="utf-8").read()
+        self.assertIn("vehicle", ents)
+        eps = open(os.path.join(self.spec_pack, "entry-points.md"), encoding="utf-8").read()
+        self.assertIn("EP-CAP", eps)
 
     # Module 2
     def test_compile_design_three_tiers(self):
@@ -164,6 +189,38 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("T01 → T05 → T07", wf)
         self.assertIn("EP-CAP", wf)
         self.assertIn("customs-agent", wf)  # handoff comment
+
+    def test_workflow_emits_langgraph_stategraph(self):
+        design = self._compile()
+        review.approve(self.design_path)
+        emit.emit_design(design, self.target)
+        wf = open(os.path.join(self.target, "fleet-orchestrator",
+                               "src", "logic", "workflow.py"), encoding="utf-8").read()
+        self.assertIn("StateGraph(AgentState)", wf)
+        self.assertIn("add_conditional_edges", wf)
+        self.assertIn("def route(", wf)
+        self.assertIn("set_entry_point('t01')", wf)
+        self.assertIn('"t05": \'t07\'', wf)   # transition table
+        self.assertIn('"t07": \'end\'', wf)   # terminal
+        self.assertIn('return "hitl"', wf)   # HOLD → hitl branch
+
+    def test_compile_writes_canonical_and_dashboard(self):
+        import argparse
+        self._ingest()
+        ns = argparse.Namespace(spec_pack=self.spec_pack, design=self.design_path,
+                                mesh_name="logistics-mesh",
+                                dashboard=os.path.join(self.tmp, "architecture-dashboard.html"))
+        rc = cli.cmd_compile(ns)
+        self.assertEqual(rc, 0)
+        for f in ("requirements.md", "entities.md", "entry-points.md"):
+            self.assertTrue(os.path.exists(os.path.join(self.spec_pack, f)), f)
+        self.assertTrue(os.path.exists(ns.dashboard))
+        html = open(ns.dashboard, encoding="utf-8").read()
+        self.assertIn("mermaid", html)
+        self.assertIn("fleet-orchestrator", html)
+        # re-compile must not re-ingest canonical files as specs
+        rc2 = cli.cmd_compile(ns)
+        self.assertEqual(rc2, 0)
 
     # CLI end-to-end (non-interactive, auto-approve)
     def test_cli_run_end_to_end(self):

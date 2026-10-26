@@ -189,29 +189,54 @@ def render_workflow(agent: AgentDef, design: TechDesign) -> str:
     first = agent.states[0].id if agent.states else "T01"
     ordered = [s.id for s in agent.states] or ["T01"]
     chain = " → ".join(ordered)
+    hold_ids = [s.id for s in agent.states if s.hold]
 
-    edge_lines = []
-    for e in agent.edges:
-        edge_lines.append(
-            f'    EDGES.append(({e.from_state!r}, {e.to_state!r}, {e.condition!r}))')
+    edge_lines = [
+        f'    EDGES.append(({e.from_state!r}, {e.to_state!r}, {e.condition!r}))'
+        for e in agent.edges]
     edges_block = "\n".join(edge_lines) or "    pass  # no cross-state edges declared"
+
+    # node bodies — one per declared state
+    node_defs: list[str] = []
+    for s in agent.states:
+        hold_note = "\n    # HOLD state: interrupt for HITL before any side effect." if s.hold else ""
+        node_defs.append(f'''
+def node_{s.id.lower()}(state: AgentState) -> dict[str, Any]:
+    """{s.id} {s.name} — {s.description or 'spec state'}.{hold_note}
+    """
+    fn = TOOLS.get({s.name!r})
+    result = fn(state.get("input", {{}})) if fn else {{"status": "no-op"}}
+    return {{"current_state": {s.id!r}, "tool_results": {{**state.get("tool_results", {{}}), {s.id!r}: result}}}}
+''')
+    nodes_block = "\n".join(node_defs)
+
+    # conditional routing: per-state "next" map for the conditional edges
+    next_map_lines = []
+    for i, sid in enumerate(ordered):
+        nxt = ordered[i + 1].lower() if i + 1 < len(ordered) else "end"
+        next_map_lines.append(f'        "{sid.lower()}": {nxt!r},')
+    next_map = "\n".join(next_map_lines)
 
     delegates = agent.delegates_to
     delegate_block = ""
     if delegates:
-        calls = "\n".join(
-            f'        # handoff to {d}: enforced by the mesh bridge (BOLA + goalHash)'
-            for d in delegates)
-        delegate_block = f"""
-    # Cross-agent handoffs declared in the spec: {', '.join(delegates)}
-{calls}
-"""
+        delegate_block = (
+            f"\n    # Cross-agent handoffs: {', '.join(delegates)} "
+            "(enforced by the mesh bridge — BOLA + goalHash).\n")
+
+    build_lines = []
+    for sid in ordered:
+        build_lines.append(f'    g.add_node("{sid.lower()}", node_{sid.lower()})')
+    build_nodes = "\n".join(build_lines)
+    first_lower = ordered[0].lower()
 
     return f'''"""
-{agent.name} — orchestration entrypoint (EDITABLE logic file 1 of 4).
+{agent.name} — LangGraph StateGraph (EDITABLE logic file 1 of 4).
 
 Compiled from the approved TECH_DESIGN.yaml.
 Entry point: {ep} → first state {first}. State chain: {chain}.
+HOLD states (HITL): {hold_ids or '[]'}.
+
 Governance (SecureGate, budgets, HITL, audit ledger) is mounted by the
 locked dm-runner — never bypass it by running this module directly.
 """
@@ -219,35 +244,72 @@ from __future__ import annotations
 
 from typing import Any
 
-# (from_state, to_state, condition) triples from the spec's edge declarations.
+from .state import AgentState, HOLD_STATES, STATE_IDS
+from .tools import TOOLS
+
+# (from_state, to_state, condition) triples declared in the spec.
 EDGES: list[tuple[str, str, str]] = []
 def _declare_edges() -> None:
 {edges_block}
 _declare_edges()
+
+{nodes_block}
+
+
+# Static transition table derived from the spec's state chain.
+NEXT: dict[str, str] = {{
+{next_map}
+}}
+
+
+def route(state: AgentState) -> str:
+    """Conditional edge: advance to the next declared state, honouring HOLDs."""
+    cur = state.get("current_state", STATE_IDS[0] if STATE_IDS else {first!r})
+    nxt = NEXT.get(cur.lower(), "end")
+    if nxt != "end" and nxt.upper() in HOLD_STATES:
+        return "hitl"
+    return nxt
+
+
+def build_graph():  # returns a compiled LangGraph StateGraph
+    """Assemble the StateGraph. Imported by the locked dm-runner."""
+    try:
+        from langgraph.graph import END, StateGraph
+    except Exception:  # langgraph optional at scaffold time
+        return None
+    g = StateGraph(AgentState)
+{build_nodes}
+    g.set_entry_point({first_lower!r})
+    for _sid in [s.lower() for s in STATE_IDS]:
+        g.add_conditional_edges(_sid, route, {{
+            "end": END,
+            "hitl": END,  # HITL interrupt handled by the dm-runner wrapper
+            **{{k: k for k in NEXT.values() if k != "end"}},
+        }})
+    return g
 
 
 def run(input: dict[str, Any]) -> dict[str, Any]:
     """Entrypoint invoked by the locked dm-runner.mjs wrapper.
 
     Contract: JSON in → JSON out; raise on failure (runner records to ledger).
-    """
-    from .state import AgentState, HOLD_STATES, STATE_IDS  # noqa: F401
-    from .tools import TOOLS
-{delegate_block}
-    state: AgentState = {{"input": input, "current_state": STATE_IDS[0] if STATE_IDS else "{first}"}}
-    # Deterministic skeleton: walk declared states, executing same-named tools.
+    Falls back to a deterministic walk when langgraph is not installed.
+    """{delegate_block}
+    graph = build_graph()
+    if graph is not None:
+        app = graph.compile()
+        return app.invoke({{"input": input, "current_state": STATE_IDS[0] if STATE_IDS else {first!r}}})
+
+    # Deterministic fallback walk (no langgraph on the host).
     results: dict[str, Any] = {{}}
     for sid in STATE_IDS:
         if sid in HOLD_STATES:
             results[sid] = {{"status": "HELD", "reason": "spec-declared hold (HITL)"}}
             break
         fn = TOOLS.get(sid.lower())
-        if fn is None:
-            continue
-        results[sid] = fn(input)
-        state["current_state"] = sid
-    state["tool_results"] = results
-    return {{"agent": "{agent.name}", "edges": EDGES, "results": results,
+        if fn is not None:
+            results[sid] = fn(input)
+    return {{"agent": {agent.name!r}, "edges": EDGES, "results": results,
             "status": "scaffolded"}}
 '''
 
