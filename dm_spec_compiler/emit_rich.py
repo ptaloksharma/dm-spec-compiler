@@ -49,11 +49,35 @@ def render_state(agent: AgentDef) -> str:
     primary = next((e for e in agent.entities if e.typed_fields), None)
     primary_td = _pascal(primary.name) if primary else "dict[str, Any]"
 
-    inv_helpers = "\n".join(
-        f'''def check_{i.id.lower().replace("-", "_")}(state: "AgentState") -> bool:
-    """{i.id}: {i.rule}"""
-    raise NotImplementedError("{i.id}: implement invariant check")'''
-        for i in agent.invariant_defs)
+    # Active validators: deterministic per invariant kind (hold-freeze I-03,
+    # withdrawal I-04, generic). Each returns a Violation dict or None.
+    def _mk_validator(inv):
+        vid = inv.id
+        fn = f"check_{vid.lower().replace('-', '_')}"
+        rule = inv.rule.replace('"', "'")
+        if vid == "I-03":  # active-hold freeze
+            body = (f'    if state.get("active_holds"):\n'
+                    f'        return {{"id": "{vid}", "rule": "{rule}", '
+                    f'"field": "active_holds", '
+                    f'"message": "{vid} violated: active holds present — state mutations frozen"}}\n'
+                    f'    return None')
+        elif vid == "I-04":  # withdrawal rule
+            body = (f'    ent = state.get("entity") or {{}}\n'
+                    f'    if ent.get("status") == "ready_to_post" and state.get("active_holds"):\n'
+                    f'        return {{"id": "{vid}", "rule": "{rule}", '
+                    f'"field": "entity.status", '
+                    f'"message": "{vid} violated: hold placed while ready_to_post — must withdraw to approved"}}\n'
+                    f'    return None')
+        else:  # generic: rule honored unless a matching exception was recorded
+            body = (f'    for exc in state.get("exceptions", []):\n'
+                    f'        if exc.get("invariant") == "{vid}":\n'
+                    f'            return {{"id": "{vid}", "rule": "{rule}", '
+                    f'"field": "exceptions", '
+                    f'"message": "{vid} violated: " + str(exc.get("message", "exception recorded"))}}\n'
+                    f'    return None')
+        return (f'def {fn}(state: "AgentState") -> "Violation | None":\n'
+                f'    """{vid}: {rule} — ACTIVE runtime validator."""\n{body}\n')
+    inv_helpers = "\n".join(_mk_validator(i) for i in agent.invariant_defs)
     inv_map = ", ".join(f'"{i.id}"' for i in agent.invariant_defs)
 
     hold_types = [h.hold_type for h in agent.holds]
@@ -88,6 +112,14 @@ class Hold(TypedDict, total=False):
     active: bool
 
 
+class Violation(TypedDict, total=False):
+    """A structured invariant violation raised at runtime."""
+    id: str          # e.g. "I-03"
+    rule: str        # invariant rule text
+    field: str       # offending state field
+    message: str
+
+
 class AgentState(TypedDict, total=False):
     """State threaded through every node of the graph."""
     input: dict[str, Any]
@@ -96,6 +128,7 @@ class AgentState(TypedDict, total=False):
     entity: {primary_td}
     active_holds: list[Hold]
     exceptions: list[dict[str, Any]]
+    violations: list[Violation]
     version: int                 # optimistic locking
     correlation_id: str
     legal_entity_id: str
@@ -106,19 +139,18 @@ class AgentState(TypedDict, total=False):
 {inv_helpers}
 
 
-def check_all_invariants(state: AgentState) -> list[str]:
-    """Return ids of violated invariants (empty = all hold)."""
-    violated: list[str] = []
+def check_all_invariants(state: AgentState) -> list[Violation]:
+    """ACTIVE runtime enforcement: evaluate every invariant validator against
+    `state` and return the list of structured Violations (empty = all hold)."""
+    violations: list[Violation] = []
     for iid in INVARIANT_IDS:
         fn = globals().get(f"check_{{iid.lower().replace('-', '_')}}")
         if fn is None:
             continue
-        try:
-            if not fn(state):
-                violated.append(iid)
-        except NotImplementedError:
-            continue
-    return violated
+        v = fn(state)
+        if v:
+            violations.append(v)
+    return violations
 '''
 
 
@@ -355,7 +387,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .state import AgentState, HOLD_STATES, STATE_IDS, TERMINAL_STATES
+from .state import (AgentState, HOLD_STATES, STATE_IDS, TERMINAL_STATES,
+                    check_all_invariants, Violation)
 from .tools import TOOLS
 
 # Static transition table (state-name → next state-name).
@@ -392,14 +425,44 @@ def route(state: AgentState) -> str:
     return nxt
 
 
+
+def invariant_gate(state: AgentState) -> dict[str, Any]:
+    """Fail-closed invariant enforcement, injected right after intake.
+
+    Evaluates every active invariant validator. On ANY violation, records the
+    structured violations into state so the graph routes to `exception` before
+    any Level-4 tool executes.
+    """
+    violations = check_all_invariants(state)
+    return {{"violations": violations, "current_state": "invariant_gate"}}
+
+
+def _exception_node(state: AgentState) -> dict[str, Any]:
+    """Terminal node for invariant violations (fail-closed, no tools ran)."""
+    return {{"final": {{"status": "INVARIANT_VIOLATION",
+                      "violations": state.get("violations", [])}},
+            "current_state": "exception"}}
+
+
+def _gate_route(state: AgentState) -> str:
+    """Route from invariant_gate: exception if violations, else first state."""
+    return "exception" if state.get("violations") else {first_name!r}
+
+
+
 def build_graph():
     try:
         from langgraph.graph import END, StateGraph
     except Exception:
         return None
     g = StateGraph(AgentState)
+    g.add_node("invariant_gate", invariant_gate)
+    g.add_node("exception", _exception_node)
 {build_nodes}
-    g.set_entry_point({first_name!r})
+    g.set_entry_point("invariant_gate")
+    g.add_conditional_edges("invariant_gate", _gate_route,
+                            {{"exception": "exception", {first_name!r}: {first_name!r}}})
+    g.add_edge("exception", END)
     targets = {{"end": END, "hitl": END, "needs_data": END,
                **{{k: k for k in NEXT.values() if k != "end"}}}}
     for _node_key in list(NEXT.keys()):

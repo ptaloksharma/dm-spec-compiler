@@ -16,8 +16,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import subprocess
+from datetime import datetime, timezone
 
 from .model import AgentDef, TechDesign
+
+
+class ApplyError(RuntimeError):
+    """Raised when a live apply precondition fails (fail-closed)."""
 
 
 def _schema_for(agent: AgentDef) -> str:
@@ -135,9 +142,91 @@ architect approved the design whose hash appears above.
 """
 
 
+def _run(cmd: list[str], cwd: str, env: dict | None = None) -> dict:
+    """Run a command; return {cmd, exit, out}. Never raises."""
+    try:
+        p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True,
+                           text=True, timeout=600)
+        return {"cmd": " ".join(cmd), "exit": p.returncode,
+                "out": (p.stdout + p.stderr).strip()[-2000:]}
+    except FileNotFoundError as e:
+        raise ApplyError(f"binary not found: {cmd[0]} ({e})") from e
+    except subprocess.TimeoutExpired:
+        return {"cmd": " ".join(cmd), "exit": 124, "out": "timeout after 600s"}
+
+
+def apply_infra(agent_dir: str, agent: AgentDef, *,
+                env: dict | None = None) -> dict:
+    """Execute live infrastructure apply for one agent dir (fail-closed).
+
+    - schema.sql + DATABASE_URL  -> psql
+    - main.tf                    -> terraform init + apply -auto-approve
+    Returns a receipt dict. Raises ApplyError on any precondition/exec failure.
+    """
+    env = env or dict(os.environ)
+    steps: list[dict] = []
+    applied: list[str] = []
+
+    schema_sql = os.path.join(agent_dir, "schema.sql")
+    if os.path.exists(schema_sql):
+        db_url = env.get("DATABASE_URL", "").strip()
+        if not db_url:
+            raise ApplyError(
+                f"{agent.name}: schema.sql present but DATABASE_URL is unset — "
+                "refusing live DB apply (fail-closed)")
+        if shutil.which("psql") is None:
+            raise ApplyError(f"{agent.name}: psql binary not found on PATH — "
+                             "cannot apply schema.sql (fail-closed)")
+        r = _run(["psql", db_url, "-v", "ON_ERROR_STOP=1", "-f", schema_sql],
+                 cwd=agent_dir, env=env)
+        steps.append(r)
+        if r["exit"] != 0:
+            raise ApplyError(f"{agent.name}: psql apply failed (exit {r['exit']}): "
+                             f"{r['out'][:400]}")
+        applied.append("psql:schema.sql")
+
+    main_tf = os.path.join(agent_dir, "main.tf")
+    if os.path.exists(main_tf):
+        if shutil.which("terraform") is None:
+            raise ApplyError(f"{agent.name}: terraform binary not found on PATH — "
+                             "cannot apply main.tf (fail-closed)")
+        for cmd in (["terraform", "init", "-input=false"],
+                    ["terraform", "apply", "-auto-approve", "-input=false"]):
+            r = _run(cmd, cwd=agent_dir, env=env)
+            steps.append(r)
+            if r["exit"] != 0:
+                raise ApplyError(f"{agent.name}: `{' '.join(cmd)}` failed "
+                                 f"(exit {r['exit']}): {r['out'][:400]}")
+        applied.append("terraform:main.tf")
+
+    return {"agent": agent.name, "dir": agent_dir,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "applied": applied, "steps": steps, "ok": True}
+
+
+def _seal_receipt(agent_dir: str, receipt: dict) -> str:
+    """Append the apply receipt to PROVISIONING.md; return receipt sha256."""
+    md_path = os.path.join(agent_dir, "PROVISIONING.md")
+    receipt_json = __import__("json").dumps(receipt, indent=2)
+    with open(md_path, "a", encoding="utf-8") as f:
+        f.write("\n## Live Apply Receipt\n\n")
+        f.write(f"- **Timestamp (UTC):** {receipt['ts']}\n")
+        f.write(f"- **Applied:** {', '.join(receipt['applied']) or '(none)'}\n")
+        f.write(f"- **Result:** {'OK' if receipt['ok'] else 'FAILED'}\n\n")
+        for s in receipt["steps"]:
+            f.write(f"### `{s['cmd']}` → exit {s['exit']}\n\n```\n{s['out']}\n```\n\n")
+    return hashlib.sha256(receipt_json.encode()).hexdigest()
+
+
 def provision_design(design: TechDesign, infra_root: str, *,
-                     design_sha: str, only: list[str] | None = None) -> dict[str, list[str]]:
-    """Write infra artifacts for every (selected) agent. Returns {name: paths}."""
+                     design_sha: str, only: list[str] | None = None,
+                     apply: bool = False,
+                     env: dict | None = None) -> dict[str, list[str]]:
+    """Write infra artifacts for every (selected) agent. Returns {name: paths}.
+
+    With ``apply=True`` additionally executes live apply (psql / terraform)
+    fail-closed, sealing the receipt into each PROVISIONING.md.
+    """
     out: dict[str, list[str]] = {}
     for agent in design.agents:
         if only and agent.name not in only:
@@ -156,6 +245,10 @@ def provision_design(design: TechDesign, infra_root: str, *,
             with open(p, "w", encoding="utf-8") as f:
                 f.write(text)
             paths.append(p)
+        if apply:
+            receipt = apply_infra(d, agent, env=env)  # raises ApplyError fail-closed
+            _seal_receipt(d, receipt)
+            paths.append(os.path.join(d, "PROVISIONING.md"))
         out[agent.name] = paths
     return out
 
