@@ -448,7 +448,12 @@ def emit_agent(agent: AgentDef, design: TechDesign, workspace: str) -> list[str]
     ws = os.path.abspath(workspace)
     kit_root = os.path.abspath(os.path.expanduser(
         os.environ.get("DM_AGENT_KIT_ROOT", "~/dm-agent-kit")))
-    if ws == kit_root or ws.startswith(kit_root + os.sep + "src"):
+    # Editable-zone guard: refuse to write ANYWHERE inside the kit repository
+    # itself, EXCEPT the kit's own intended agent-workspace area (<kit>/agents/).
+    # Writing to the kit root or its src/ pollutes/corrupts the library.
+    in_kit = ws == kit_root or ws.startswith(kit_root + os.sep)
+    under_kit_agents = ws.startswith(kit_root + os.sep + "agents" + os.sep)
+    if in_kit and not under_kit_agents:
         raise PermissionError(f"refusing to emit into the core kit tree: {ws}")
 
     logic_dir = os.path.join(ws, "src", "logic")
