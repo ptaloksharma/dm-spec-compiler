@@ -217,10 +217,13 @@ def api_approve(design: str, assume_yes: bool = False, dashboard: str | None = N
 # --------------------------------------------------------------------------- #
 # Stage 4: Provision
 # --------------------------------------------------------------------------- #
-def api_provision(design: str, infra: str, agents: list[str] | None = None) -> dict:
+def api_provision(design: str, infra: str, agents: list[str] | None = None,
+                  apply: bool = False) -> dict:
     """
     Provision infrastructure for approved design.
     Requires approval stamp. Writes per-agent infra/<agent>/ artifacts.
+    With apply=True, executes live apply (psql / terraform) fail-closed and
+    seals the receipt into each PROVISIONING.md.
     """
     t0 = time.time()
     try:
@@ -229,15 +232,19 @@ def api_provision(design: str, infra: str, agents: list[str] | None = None) -> d
         if not is_approved(design):
             return {"status": "blocked", "error": "design not approved — run approve first"}
 
-        from .provision import provision_design, design_sha256
+        from .provision import provision_design, design_sha256, ApplyError
         d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
         sha = design_sha256(design)
-        out = provision_design(d, infra, design_sha=sha, only=agents)
+        try:
+            out = provision_design(d, infra, design_sha=sha, only=agents, apply=apply)
+        except ApplyError as e:
+            return {"status": "error", "error": f"live apply failed (fail-closed): {e}"}
         return {
             "status": "ok",
             "data": {
                 "infra_root": infra,
                 "design_sha": sha,
+                "apply": apply,
                 "provisioned": {
                     name: _normalize_paths(paths, os.getcwd())
                     for name, paths in out.items()

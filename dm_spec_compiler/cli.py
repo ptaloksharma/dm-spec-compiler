@@ -128,7 +128,8 @@ def cmd_provision(args) -> int:
             "approval stamp. Run `review` first (or --force).")
     design = TechDesign.from_yaml(open(args.design, encoding="utf-8").read())
     sha = design_sha256(args.design)
-    out = provision_design(design, args.infra, design_sha=sha, only=args.agent)
+    out = provision_design(design, args.infra, design_sha=sha, only=args.agent,
+                           apply=getattr(args, 'apply', False))
     for name, files in out.items():
         print(f"  ⛁ provisioned {name}: {len(files)} artifacts")
         for f in files:
@@ -211,6 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
         if name in ("review", "run"):
             sp.add_argument("--yes", action="store_true",
                             help="non-interactive auto-approve (architect gate)")
+        if name in ("provision", "run"):
+            sp.add_argument("--apply", action="store_true",
+                            help="execute live infra apply (psql/terraform) fail-closed")
         if name in ("provision", "emit", "run"):
             sp.add_argument("--force", action="store_true",
                             help="bypass the approval check")
