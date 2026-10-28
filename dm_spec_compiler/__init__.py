@@ -11,4 +11,4 @@ Exposes a Plugin API (`plugin_api`) for programmatic integration
 """
 from . import _kitpath  # noqa: F401  (must be first — wires the kit onto sys.path)
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
