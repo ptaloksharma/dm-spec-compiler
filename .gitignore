@@ -9,3 +9,4 @@ agents/
 .dm-agent/
 .vscode/
 *.code-workspace
+.dm/
