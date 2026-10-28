@@ -272,3 +272,80 @@ def test_refine_remove_state_and_tool(tmp_path):
     r3 = refine.refine_design_file(str(dp), "remove state NoSuchStateXYZ")
     assert r3["ok"] is False
 
+# --------------------------------------------------------------------------- #
+# DSH log-capture alignment (Tab 3 + Tab 4)                                    #
+# --------------------------------------------------------------------------- #
+def _write_dsh_log(tmp_path, records):
+    import json as _j
+    f = tmp_path / "dsh-session.jsonl"
+    f.write_text("\n".join(_j.dumps(r) for r in records))
+    return str(f)
+
+
+def test_dsh_log_scoping_no_double_count(tmp_path):
+    """STEP/MODEL spans feed per-node; parent AGENT spans are turn totals only —
+    never summed together (double-count guard)."""
+    from dm_spec_compiler.token_estimator import parse_dsh_log
+    log = _write_dsh_log(tmp_path, [
+        {"gen_ai.span.kind": "AGENT", "dsh.session.id": "sess-1", "total_tokens": 300},
+        {"gen_ai.span.kind": "MODEL", "dsh.session.id": "sess-1", "tool": "match_invoice", "total_tokens": 120},
+        {"gen_ai.span.kind": "STEP", "dsh.session.id": "sess-1", "tool": "post_invoice", "total_tokens": 180},
+    ])
+    res = parse_dsh_log(log)
+    assert res is not None
+    assert res["observed_step_tokens"] == 300          # MODEL(120)+STEP(180)
+    assert res["observed_turn_tokens"] == 300          # AGENT total only
+    assert len(res["step_rows"]) == 2                  # only STEP/MODEL rows
+    assert res["sessions"] == ["sess-1"]
+    # turn total must NOT be added into step tokens
+    assert res["observed_step_tokens"] != res["observed_step_tokens"] + res["observed_turn_tokens"]
+
+
+def test_dsh_tool_definitions_overhead(tmp_path):
+    from dm_spec_compiler.token_estimator import parse_dsh_log
+    log = _write_dsh_log(tmp_path, [
+        {"gen_ai.span.kind": "MODEL", "dsh.session.id": "s", "tool": "t",
+         "total_tokens": 50, "gen_ai.tool.definitions": 7},
+    ])
+    res = parse_dsh_log(log)
+    assert res["step_rows"][0]["tool_definitions"] == 7
+
+
+def test_token_estimator_dsh_runtime_surface(tmp_path):
+    from dm_spec_compiler.token_estimator import estimate_tokens
+    d = _rich_design()
+    log = _write_dsh_log(tmp_path, [
+        {"gen_ai.span.kind": "MODEL", "dsh.session.id": "s1", "tool": "match_invoice", "total_tokens": 100},
+        {"gen_ai.span.kind": "AGENT", "dsh.session.id": "s1", "total_tokens": 100},
+    ])
+    est = estimate_tokens(d, dsh_log_path=log)
+    assert est["dsh_runtime"] is not None
+    assert est["dsh_runtime"]["observed_step_tokens"] == 100
+    assert est["dsh_runtime"]["observed_turn_tokens"] == 100
+    # static estimate unchanged by dsh ingestion
+    assert estimate_tokens(d)["expected_run_tokens"] == est["expected_run_tokens"]
+
+
+def test_events_dsh_runtime_correlation(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("DM_WORKSPACE_ROOT", str(tmp_path))
+    import importlib
+    from dm_spec_compiler import events
+    importlib.reload(events)
+    log = tmp_path / ".dm" / "spec" / "dsh-session.jsonl"
+    log.parent.mkdir(parents=True)
+    import json as _j
+    log.write_text("\n".join(_j.dumps(r) for r in [
+        {"event_type": "tool_call", "tool": "match_invoice", "dsh.session.id": "sess-9", "decision": "ALLOW"},
+        {"event_type": "approval_hold", "tool": "post_invoice", "dsh.session.id": "sess-9", "decision": "HOLD"},
+        {"event_type": "subagent_spawn", "name": "sub-1", "dsh.session.id": "sess-9", "dsh.session.parent": "root"},
+    ]))
+    n = events.ingest_dsh_runtime(str(log))
+    assert n == 3
+    stream = events.recent(limit=20)
+    chans = {e["channel"] for e in stream}
+    assert "DSH-TOOL" in chans and "DSH-HOLD" in chans and "DSH-AGENT" in chans
+    # session correlation preserved in detail
+    assert any((e["detail"] or {}).get("session_id") == "sess-9" for e in stream)
+    assert any((e["detail"] or {}).get("parent_session") == "root" for e in stream)
+

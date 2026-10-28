@@ -261,7 +261,20 @@ def api_tokens(design: str) -> dict:
             return {"status": "error", "error": f"design not found: {design}"}
         from .token_estimator import estimate_tokens
         d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
-        est = estimate_tokens(d)
+        # Auto-discover a dsh session/step log beside the design or in the
+        # workspace .dm dir (optional observed-runtime telemetry).
+        import glob as _glob
+        dsh_log = None
+        for cand in (
+            design + ".dsh.jsonl",
+            os.path.join(os.path.dirname(design), "dsh-session.jsonl"),
+            os.path.join(os.path.dirname(design), ".dm", "dsh", "session.jsonl"),
+            *_glob.glob(os.path.join(os.path.dirname(design) or ".", ".dm", "spec", "dsh*.jsonl")),
+        ):
+            if cand and os.path.exists(cand):
+                dsh_log = cand
+                break
+        est = estimate_tokens(d, dsh_log_path=dsh_log)
         from .events import emit_event
         emit_event("ARCHIFY", f"token estimate: {est['expected_run_tokens']} expected / run")
         return {"status": "ok", "data": est,
@@ -277,10 +290,25 @@ def api_events(limit: int = 100, channel: str | None = None) -> dict:
     """Return the structured pipeline event ring buffer (most-recent-first) +
     the unread alert count driving the header notification bell."""
     try:
-        from .events import recent, unread_alert_count
+        from .events import recent, unread_alert_count, unified_stream
+        # Auto-discover a dsh runtime log to merge into the unified stream.
+        import glob as _glob, os as _os
+        dsh_log = None
+        root = _os.environ.get("DM_WORKSPACE_ROOT", _os.getcwd())
+        for cand in [*_glob.glob(_os.path.join(root, ".dm", "spec", "dsh*.jsonl")),
+                     *_glob.glob(_os.path.join(root, ".dm", "dsh", "*.jsonl"))]:
+            if _os.path.exists(cand):
+                dsh_log = cand
+                break
+        events = recent(limit=limit, channel=channel) if channel else unified_stream(limit=limit, dsh_log_path=dsh_log)
+        # session correlation: group events sharing a dsh.session id
+        sessions = sorted({(e.get("detail") or {}).get("session_id")
+                           for e in events if (e.get("detail") or {}).get("session_id")})
         return {"status": "ok",
-                "data": {"events": recent(limit=limit, channel=channel),
-                         "unread_alerts": unread_alert_count()},
+                "data": {"events": events,
+                         "unread_alerts": unread_alert_count(),
+                         "sessions": sessions,
+                         "dsh_log": dsh_log},
                 "metadata": {"timestamp": _iso_now()}}
     except Exception as e:
         return {"status": "error", "error": str(e)}

@@ -84,3 +84,85 @@ def unread_alert_count() -> int:
         _hydrated = True
         _load_persisted()
     return sum(1 for e in _ring if e["level"] in ("warn", "block"))
+
+# --------------------------------------------------------------------------- #
+# DSH runtime log correlation (Tab 4: unified stream)                          #
+# --------------------------------------------------------------------------- #
+# Ingest dsh runtime interception events (tool calls, pre/post policy gates,
+# approval holds, subagent spawns) and normalize them into our channel schema,
+# correlating parent + subagent traces via the shared dsh.session.* id so a
+# multi-agent execution renders as ONE ordered stream.
+import json as _json
+import os as _os
+
+_DSH_KIND_CHANNEL = {
+    "tool_call": "DSH-TOOL",
+    "tool_invocation": "DSH-TOOL",
+    "policy_gate": "DSH-GATE",
+    "pre_execution_gate": "DSH-GATE",
+    "post_execution_gate": "DSH-GATE",
+    "approval_hold": "DSH-HOLD",
+    "hitl_hold": "DSH-HOLD",
+    "subagent_spawn": "DSH-AGENT",
+    "agent_spawn": "DSH-AGENT",
+}
+
+
+def ingest_dsh_runtime(path: str) -> int:
+    """Parse a dsh runtime log (JSONL/JSON array) and append normalized events
+    to the ring. Returns the number of events ingested. Deterministic, tolerant
+    of unknown shapes (skipped)."""
+    if not _os.path.exists(path):
+        return 0
+    try:
+        text = open(path, encoding="utf-8").read().strip()
+    except Exception:
+        return 0
+    if not text:
+        return 0
+    records = []
+    try:
+        if text.startswith("["):
+            records = [r for r in _json.loads(text) if isinstance(r, dict)]
+        else:
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        records.append(_json.loads(line))
+                    except Exception:
+                        pass
+    except Exception:
+        return 0
+
+    count = 0
+    for rec in records:
+        etype = str(rec.get("event_type") or rec.get("type") or rec.get("kind") or "").lower()
+        channel = _DSH_KIND_CHANNEL.get(etype)
+        if not channel:
+            # generic dsh event — bucket under DSH
+            channel = "DSH"
+        session = str(rec.get("dsh.session.id") or rec.get("session_id")
+                      or rec.get("trace_id") or "")
+        parent = str(rec.get("dsh.session.parent") or rec.get("parent_session_id")
+                     or rec.get("parent") or "")
+        tool = rec.get("tool") or rec.get("gen_ai.operation.name") or rec.get("name") or ""
+        decision = str(rec.get("decision") or rec.get("verdict") or "").upper()
+        level = "block" if decision in ("BLOCK", "DENY") else ("warn" if decision in ("HOLD", "SUSPEND") else "info")
+        msg = rec.get("message") or (
+            f"{etype or 'event'}" + (f" {tool}" if tool else "") +
+            (f" [{decision}]" if decision else ""))
+        emit_event(channel, str(msg), level=level,
+                   detail={"session_id": session, "parent_session": parent,
+                           "tool": tool, "decision": decision})
+        count += 1
+    return count
+
+
+def unified_stream(limit: int = 100, dsh_log_path: str | None = None) -> list[dict]:
+    """The compiler SDLC events + (optionally) dsh runtime events, merged and
+    sorted by timestamp so parent/subagent traces render as one stream."""
+    if dsh_log_path:
+        ingest_dsh_runtime(dsh_log_path)
+    return recent(limit=limit)
+
