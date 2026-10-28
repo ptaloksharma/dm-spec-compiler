@@ -250,10 +250,47 @@ def api_refine(design: str, instruction: str, dashboard: str | None = None) -> d
 
 
 # --------------------------------------------------------------------------- #
+# Token Economics (deterministic static analysis — zero LLM)
+# --------------------------------------------------------------------------- #
+def api_tokens(design: str) -> dict:
+    """Deterministic token & cost estimate for the design (static AST/topology
+    analysis of TECH_DESIGN.yaml; no LLM calls)."""
+    t0 = time.time()
+    try:
+        if not os.path.exists(design):
+            return {"status": "error", "error": f"design not found: {design}"}
+        from .token_estimator import estimate_tokens
+        d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
+        est = estimate_tokens(d)
+        from .events import emit_event
+        emit_event("ARCHIFY", f"token estimate: {est['expected_run_tokens']} expected / run")
+        return {"status": "ok", "data": est,
+                "metadata": {"timestamp": _iso_now(), "duration_ms": int((time.time() - t0) * 1000)}}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# --------------------------------------------------------------------------- #
+# System Logs & Alerts (structured pipeline telemetry)
+# --------------------------------------------------------------------------- #
+def api_events(limit: int = 100, channel: str | None = None) -> dict:
+    """Return the structured pipeline event ring buffer (most-recent-first) +
+    the unread alert count driving the header notification bell."""
+    try:
+        from .events import recent, unread_alert_count
+        return {"status": "ok",
+                "data": {"events": recent(limit=limit, channel=channel),
+                         "unread_alerts": unread_alert_count()},
+                "metadata": {"timestamp": _iso_now()}}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# --------------------------------------------------------------------------- #
 # Stage 4: Provision
 # --------------------------------------------------------------------------- #
 def api_provision(design: str, infra: str, agents: list[str] | None = None,
-                  apply: bool = False) -> dict:
+                  apply: bool = False, cloud: str = "azure") -> dict:
     """
     Provision infrastructure for approved design.
     Requires approval stamp. Writes per-agent infra/<agent>/ artifacts.
@@ -271,7 +308,7 @@ def api_provision(design: str, infra: str, agents: list[str] | None = None,
         d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
         sha = design_sha256(design)
         try:
-            out = provision_design(d, infra, design_sha=sha, only=agents, apply=apply)
+            out = provision_design(d, infra, design_sha=sha, only=agents, apply=apply, cloud=cloud)
         except ApplyError as e:
             return {"status": "error", "error": f"live apply failed (fail-closed): {e}"}
         return {
@@ -280,6 +317,7 @@ def api_provision(design: str, infra: str, agents: list[str] | None = None,
                 "infra_root": infra,
                 "design_sha": sha,
                 "apply": apply,
+                "cloud": cloud,
                 "provisioned": {
                     name: _normalize_paths(paths, os.getcwd())
                     for name, paths in out.items()
@@ -367,6 +405,38 @@ def api_verify(workspace: str, design: str | None = None) -> dict:
             },
             "metadata": {"timestamp": _iso_now(), "duration_ms": int((time.time() - t0) * 1000)},
         }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# --------------------------------------------------------------------------- #
+# Token Economics (Tab 3)
+# --------------------------------------------------------------------------- #
+def api_tokens(design: str) -> dict:
+    """Deterministic token & cost estimate from TECH_DESIGN.yaml."""
+    t0 = time.time()
+    try:
+        if not os.path.exists(design):
+            return {"status": "error", "error": f"design not found: {design}"}
+        from .token_estimator import estimate_tokens
+        d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
+        return {"status": "ok", "data": estimate_tokens(d),
+                "metadata": {"timestamp": _iso_now(), "duration_ms": int((time.time() - t0) * 1000)}}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# --------------------------------------------------------------------------- #
+# System Logs & Alerts (Tab 4)
+# --------------------------------------------------------------------------- #
+def api_events(limit: int = 100, channel: str | None = None) -> dict:
+    """Recent structured pipeline events + the unread alert (bell) count."""
+    try:
+        from .events import recent, unread_alert_count
+        return {"status": "ok",
+                "data": {"events": recent(limit=limit, channel=channel),
+                         "alerts": unread_alert_count()},
+                "metadata": {"timestamp": _iso_now()}}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

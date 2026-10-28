@@ -185,3 +185,90 @@ def test_emit_preserves_workflow_handwritten_block(tmp_path):
     wv = open(wp).read()
     assert "CUSTOM_WORKFLOW_HOOK" in wv and "build_graph" in wv
 
+# --------------------------------------------------------------------------- #
+# Token estimator (deterministic static analysis) + expanded refine grammar
+# --------------------------------------------------------------------------- #
+def _rich_design():
+    from dm_spec_compiler.cli import _collect_rich
+    from dm_spec_compiler.design import compile_design_rich
+    return compile_design_rich({}, _collect_rich(str(FIX_RICH)), mesh_name="inventory-mesh")
+
+
+def test_token_estimator_deterministic_and_structured():
+    from dm_spec_compiler.token_estimator import estimate_tokens
+    d = _rich_design()
+    est = estimate_tokens(d)
+    assert est["build_tokens"] > 0
+    assert est["expected_run_tokens"] > 0
+    assert est["max_loop_tokens"] >= est["expected_run_tokens"]
+    # deepseek cheaper than frontier baseline
+    assert est["cost_per_1000_runs"]["deepseek"]["expected"] < \
+        est["cost_per_1000_runs"]["frontier"]["expected"]
+    # per-node rows match state count and carry prompt+est
+    ag = est["agents"][0]
+    assert len(ag["per_node"]) == ag["states"]
+    assert all(r["prompt_tokens"] >= 0 and r["est_tokens"] > 0 for r in ag["per_node"])
+    # deterministic: same design -> identical numbers
+    assert estimate_tokens(d)["expected_run_tokens"] == est["expected_run_tokens"]
+
+
+def test_api_tokens_endpoint(tmp_path):
+    from dm_spec_compiler.plugin_api import api_tokens
+    d = _rich_design()
+    dp = tmp_path / "TECH_DESIGN.yaml"
+    dp.write_text(d.to_yaml())
+    res = api_tokens(str(dp))
+    assert res["status"] == "ok"
+    assert res["data"]["expected_run_tokens"] > 0
+    assert "cost_per_1000_runs" in res["data"]
+
+
+def test_api_events_ring_buffer():
+    from dm_spec_compiler.events import emit_event, recent, unread_alert_count
+    emit_event("WIZARD", "test event")
+    emit_event("GUARDRAIL", "blocked thing", level="block")
+    res = recent(limit=10)
+    assert res and res[0]["channel"] == "GUARDRAIL"
+    assert unread_alert_count() >= 1
+    from dm_spec_compiler.plugin_api import api_events
+    r = api_events(limit=10)
+    assert r["status"] == "ok" and "events" in r["data"]
+
+
+def test_refine_add_transition(tmp_path):
+    from dm_spec_compiler import refine
+    d = _rich_design()
+    dp = tmp_path / "TECH_DESIGN.yaml"
+    dp.write_text(d.to_yaml())
+    n = len(d.agents[0].transitions)
+    r = refine.refine_design_file(str(dp), "add a transition Planned -> Approved when signed")
+    assert r["ok"]
+    from dm_spec_compiler.model import TechDesign
+    d2 = TechDesign.from_yaml(dp.read_text())
+    assert len(d2.agents[0].transitions) == n + 1
+
+
+def test_refine_remove_state_and_tool(tmp_path):
+    from dm_spec_compiler import refine
+    from dm_spec_compiler.model import TechDesign
+    d = _rich_design()
+    dp = tmp_path / "TECH_DESIGN.yaml"
+    dp.write_text(d.to_yaml())
+    a = d.agents[0]
+    some_state = a.states[1].name
+    n_states = len(a.states)
+    r = refine.refine_design_file(str(dp), f"remove state {some_state}")
+    assert r["ok"]
+    d2 = TechDesign.from_yaml(dp.read_text())
+    assert len(d2.agents[0].states) == n_states - 1
+    # remove a tool
+    if d2.agents[0].tools:
+        tname = d2.agents[0].tools[0].name
+        n_tools = len(d2.agents[0].tools)
+        r2 = refine.refine_design_file(str(dp), f"remove tool {tname}")
+        assert r2["ok"]
+        assert len(TechDesign.from_yaml(dp.read_text()).agents[0].tools) == n_tools - 1
+    # removing a missing state fails closed
+    r3 = refine.refine_design_file(str(dp), "remove state NoSuchStateXYZ")
+    assert r3["ok"] is False
+

@@ -220,9 +220,14 @@ def _seal_receipt(agent_dir: str, receipt: dict) -> str:
 
 def provision_design(design: TechDesign, infra_root: str, *,
                      design_sha: str, only: list[str] | None = None,
-                     apply: bool = False,
+                     apply: bool = False, cloud: str = "azure",
                      env: dict | None = None) -> dict[str, list[str]]:
     """Write infra artifacts for every (selected) agent. Returns {name: paths}.
+
+    ``cloud`` selects the IaC target:
+      - "azure"     → main.bicep + main.tf (Azure, both emit)
+      - "aws"       → main.tf only (Terraform, AWS-oriented)
+      - "terraform" → main.tf only (generic Terraform)
 
     With ``apply=True`` additionally executes live apply (psql / terraform)
     fail-closed, sealing the receipt into each PROVISIONING.md.
@@ -233,12 +238,14 @@ def provision_design(design: TechDesign, infra_root: str, *,
             continue
         d = os.path.join(infra_root, agent.name)
         os.makedirs(d, exist_ok=True)
+        cloud_key = (cloud or "azure").lower()
         artifacts = {
             "schema.sql": render_schema_sql(agent),
-            "main.bicep": render_bicep(agent),
             "main.tf": render_terraform(agent),
             "PROVISIONING.md": render_provisioning_md(agent, design_sha),
         }
+        if cloud_key == "azure":
+            artifacts["main.bicep"] = render_bicep(agent)  # Azure-only Bicep
         paths = []
         for fname, text in artifacts.items():
             p = os.path.join(d, fname)
