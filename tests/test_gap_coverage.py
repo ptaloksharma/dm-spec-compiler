@@ -143,3 +143,45 @@ class ProvisionApplyReceiptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_emit_preserves_handwritten_logic_below_sentinel(tmp_path):
+    """Option A: re-emission regenerates plumbing but preserves hand-written
+    code below the sentinel preserve-marker (emit.py docstring contract)."""
+    from dm_spec_compiler.cli import _collect_rich
+    from dm_spec_compiler.design import compile_design_rich
+    from dm_spec_compiler import emit
+    rich = _collect_rich(str(FIX_RICH))
+    d = compile_design_rich({}, rich, mesh_name="inventory-mesh")
+    a = d.agents[0]
+    tgt = str(tmp_path / "agents")
+
+    emit.emit_design(d, tgt)  # first emission
+    wf = os.path.join(tgt, a.name, "src", "logic", "tools.py")
+    assert emit._PRESERVE_MARKER in open(wf).read()
+
+    # hand-edit below the sentinel, then re-emit
+    with open(wf, "a") as f:
+        f.write("\n\ndef my_custom_helper(x):\n    return x * 2\n")
+    emit.emit_design(d, tgt)
+    v2 = open(wf).read()
+    assert "my_custom_helper" in v2            # hand-written logic survives
+    assert "TOOLS" in v2 and "echo" in v2       # plumbing regenerated
+    assert v2.count(emit._PRESERVE_MARKER) == 1  # idempotent marker
+
+
+def test_emit_preserves_workflow_handwritten_block(tmp_path):
+    from dm_spec_compiler.cli import _collect_rich
+    from dm_spec_compiler.design import compile_design_rich
+    from dm_spec_compiler import emit
+    rich = _collect_rich(str(FIX_RICH))
+    d = compile_design_rich({}, rich, mesh_name="inventory-mesh")
+    a = d.agents[0]
+    tgt = str(tmp_path / "agents")
+    emit.emit_design(d, tgt)
+    wp = os.path.join(tgt, a.name, "src", "logic", "workflow.py")
+    with open(wp, "a") as f:
+        f.write("\nCUSTOM_WORKFLOW_HOOK = True\n")
+    emit.emit_design(d, tgt)
+    wv = open(wp).read()
+    assert "CUSTOM_WORKFLOW_HOOK" in wv and "build_graph" in wv
+

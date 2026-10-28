@@ -215,6 +215,41 @@ def api_approve(design: str, assume_yes: bool = False, dashboard: str | None = N
 
 
 # --------------------------------------------------------------------------- #
+# Stage 3b: Conversational Refinement (Buddy collaborator)
+# --------------------------------------------------------------------------- #
+def api_refine(design: str, instruction: str, dashboard: str | None = None) -> dict:
+    """Apply a natural-language refinement to TECH_DESIGN.yaml, re-validate via
+    pydantic, re-render the ArchiMate dashboard, and return the change report.
+    Fail-closed: unparseable instructions or failed re-validation leave the
+    design file untouched."""
+    t0 = time.time()
+    try:
+        if not os.path.exists(design):
+            return {"status": "error", "error": f"design not found: {design}"}
+        from .refine import refine_design_file
+        res = refine_design_file(design, instruction)
+        if not res.get("ok"):
+            return {"status": "blocked", "error": res.get("error", "couldn't apply refinement"),
+                    "data": {"changed": []}}
+        dash_path = None
+        if dashboard:
+            d = TechDesign.from_yaml(open(design, encoding="utf-8").read())
+            dash_path = render_dashboard(d, dashboard)["path"]
+        return {
+            "status": "ok",
+            "data": {
+                "changed": res.get("changed", []),
+                "summary": res.get("summary", ""),
+                "design": design,
+                "dashboard_path": dash_path,
+            },
+            "metadata": {"timestamp": _iso_now(), "duration_ms": int((time.time() - t0) * 1000)},
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# --------------------------------------------------------------------------- #
 # Stage 4: Provision
 # --------------------------------------------------------------------------- #
 def api_provision(design: str, infra: str, agents: list[str] | None = None,

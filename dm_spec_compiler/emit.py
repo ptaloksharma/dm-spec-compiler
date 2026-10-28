@@ -28,6 +28,46 @@ from . import emit_rich
 
 _SENTINEL = "# DM-SPEC-COMPILER GENERATED BLOCK (regenerated from TECH_DESIGN.yaml)"
 
+# Hand-written code is preserved below this marker on re-emission. Everything
+# from the marker line to EOF in an EXISTING file is carried over verbatim; the
+# freshly rendered plumbing (headers, imports, registries, nodes) is rebuilt
+# above it. This makes the docstring's "additive sentinel block" claim real.
+_PRESERVE_MARKER = "# --- DM-SPEC-COMPILER: hand-written code below is preserved ---"
+
+
+def _split_preserved(existing: str) -> str:
+    """Return the hand-written tail of an existing emitted file (from the
+    preserve marker to EOF), or "" if none. The marker line itself is kept so
+    re-emission stays idempotent."""
+    idx = existing.find(_PRESERVE_MARKER)
+    if idx == -1:
+        return ""
+    return existing[idx:].rstrip() + "\n"
+
+
+def _write_preserving(path: str, rendered: str) -> None:
+    """Write `rendered`, preserving any hand-written block from the existing
+    file. If the rendered output already contains the preserve marker, the
+    existing tail (after the marker) is re-appended."""
+    existing = ""
+    if os.path.exists(path):
+        try:
+            existing = open(path, encoding="utf-8").read()
+        except Exception:
+            existing = ""
+    tail = _split_preserved(existing)
+    if not tail:
+        # first emission (or no marker): append the marker so future hand-edits
+        # have a stable home below the generated plumbing.
+        body = rendered.rstrip() + "\n\n" + _PRESERVE_MARKER + "\n"
+    else:
+        # strip any stale marker already present in the fresh render, then
+        # re-anchor the preserved hand-written tail.
+        head = rendered.split(_PRESERVE_MARKER)[0].rstrip()
+        body = head + "\n\n" + tail
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+
 
 # --------------------------------------------------------------------------- #
 # GOAL.yaml                                                                     #
@@ -483,15 +523,15 @@ def emit_agent(agent: AgentDef, design: TechDesign, workspace: str) -> list[str]
             f.write(render_goal(agent, design))
     written.append(goal_path)
 
+    # Editable logic files: regenerate the plumbing but PRESERVE any
+    # hand-written logic below the sentinel marker (Option A).
     for fname, renderer in _LOGIC_FILES.items():
         path = os.path.join(logic_dir, fname)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(renderer(agent))
+        _write_preserving(path, renderer(agent))
         written.append(path)
 
     wf_path = os.path.join(logic_dir, "workflow.py")
-    with open(wf_path, "w", encoding="utf-8") as f:
-        f.write(render_workflow(agent, design))
+    _write_preserving(wf_path, render_workflow(agent, design))
     written.append(wf_path)
 
     # locked runtime harness → enables LIVE --self-test / --mesh-test
